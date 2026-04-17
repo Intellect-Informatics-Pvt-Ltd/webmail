@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PSense Mail API — Default Configuration
+#
+# Override any key with environment variables using double-underscore nesting:
+#   PSENSE_MAIL__DATABASE__BACKEND=mongo
+#   PSENSE_MAIL__PROVIDER__ACTIVE=gmail
+# ─────────────────────────────────────────────────────────────────────────────
+
+app:
+  name: "PSense Mail API"
+  version: "0.1.0"
+  debug: false
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:3001"
+
+# ── Authentication (KeyCloak) ────────────────────────────────────────────────
+auth:
+  enabled: false                          # Set true when KeyCloak is provisioned
+  issuer: "https://auth.psense.ai/realms/psense"
+  audience: "psense-mail-api"
+  jwks_uri: "https://auth.psense.ai/realms/psense/protocol/openid-connect/certs"
+  dev_user_id: "dev-user-001"
+  dev_user_email: "avery@psense.ai"
+  dev_user_name: "Avery Chen"
+
+# ── Database ─────────────────────────────────────────────────────────────────
+database:
+  backend: "memory"                       # "mongo" | "memory"
+  mongo:
+    uri: "mongodb://localhost:27017"
+    db_name: "psense_mail"
+    min_pool_size: 5
+    max_pool_size: 20
+  memory:
+    seed_on_start: true
+
+# ── Mail Provider ────────────────────────────────────────────────────────────
+provider:
+  active: "memory"                        # "mailpit" | "gmail" | "memory"
+
+  mailpit:
+    smtp_host: "localhost"
+    smtp_port: 1025
+    api_url: "http://localhost:8025"
+    from_address: "noreply@psense.local"
+
+  gmail:
+    credentials_file: "/secrets/gmail-credentials.json"
+    token_file: "/secrets/gmail-token.json"
+    scopes:
+      - "https://www.googleapis.com/auth/gmail.modify"
+      - "https://www.googleapis.com/auth/gmail.send"
+    watch_topic: "projects/psense-mail/topics/gmail-push"
+
+# ── File Storage ─────────────────────────────────────────────────────────────
+file_storage:
+  backend: "nas"                          # "nas" | "s3" | "azure_blob" | "gcs"
+
+  nas:
+    base_path: "./data/attachments"
+    max_file_size_mb: 25
+    allowed_extensions: ["*"]
+
+  s3:
+    bucket: "psense-mail-attachments"
+    region: "us-east-1"
+    access_key_id: null
+    secret_access_key: null
+    endpoint_url: null
+
+  azure_blob:
+    connection_string: null
+    container_name: "psense-mail-attachments"
+
+  gcs:
+    bucket: "psense-mail-attachments"
+    credentials_file: null
+
+# ── Search ───────────────────────────────────────────────────────────────────
+search:
+  backend: "mongo"                        # "mongo" | "memory"
+
+# ── Background Workers ──────────────────────────────────────────────────────
+workers:
+  enabled: true
+  snooze_check_interval_seconds: 60
+  send_retry_max_attempts: 3
+  sync_interval_seconds: 300
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  format: "json"
+  correlation_header: "X-Correlation-ID"

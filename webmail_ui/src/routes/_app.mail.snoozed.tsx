@@ -1,0 +1,6 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { MailWorkspace } from "@/components/mail/mail-workspace";
+
+export const Route = createFileRoute("/_app/mail/snoozed")({
+  component: () => <MailWorkspace filter={{ folderKey: "snoozed" }} title="Snoozed" />,
+});
