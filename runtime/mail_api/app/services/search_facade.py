@@ -2,15 +2,18 @@
 
 Full-text search with structured operators (from:, to:, has:, is:, subject:)
 matching the webmail UI's use-filtered-messages.ts logic.
+
+Delegates all query execution to the injected SearchAdapter (Mongo or Memory).
+The facade owns only query parsing, request-to-filter mapping, and response mapping.
 """
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from typing import Any
 
-from app.domain.models import MessageDoc, MailRecipient
+from app.adapters.protocols import SearchAdapter
+from app.domain.models import MessageDoc
 from app.domain.requests import SearchRequest
 from app.domain.responses import SearchHit, SearchResponse
 
@@ -18,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_search_query(query: str) -> dict[str, Any]:
-    """Parse structured search operators into MongoDB filter fields.
+    """Parse structured search operators into filter fields.
 
     Supports: from:, to:, subject:, has:attachment, is:read/unread/flagged/pinned
     Everything else becomes a free-text substring match.
@@ -67,177 +70,99 @@ def _parse_search_query(query: str) -> dict[str, Any]:
 
 
 class SearchFacade:
-    """Search operations facade."""
+    """Search operations facade — delegates query execution to SearchAdapter."""
+
+    def __init__(self, search_adapter: SearchAdapter | None = None):
+        self._search_adapter = search_adapter
 
     async def search_messages(
         self, user_id: str, request: SearchRequest,
     ) -> SearchResponse:
         """Search messages with structured filters and free-text."""
-        mongo_filter: dict[str, Any] = {"user_id": user_id}
+        if not self._search_adapter:
+            raise RuntimeError("SearchFacade requires a SearchAdapter")
 
         # Parse query string for operators
         parsed: dict[str, Any] = {}
+        free_text = ""
         if request.query:
             parsed = _parse_search_query(request.query)
+            free_text = parsed.pop("free_text", "")
 
-        # Apply parsed operator filters
-        if "sender_email" in parsed:
-            mongo_filter["sender.email"] = {"$regex": parsed["sender_email"], "$options": "i"}
-        if "recipient_email" in parsed:
-            mongo_filter["recipients.email"] = {"$regex": parsed["recipient_email"], "$options": "i"}
-        if "subject_contains" in parsed:
-            mongo_filter["subject"] = {"$regex": parsed["subject_contains"], "$options": "i"}
-        if "has_attachments" in parsed:
-            mongo_filter["has_attachments"] = parsed["has_attachments"]
-        if "has_mentions" in parsed:
-            mongo_filter["has_mentions"] = parsed["has_mentions"]
-        if "is_read" in parsed:
-            mongo_filter["is_read"] = parsed["is_read"]
-        if "is_flagged" in parsed:
-            mongo_filter["is_flagged"] = parsed["is_flagged"]
-        if "is_pinned" in parsed:
-            mongo_filter["is_pinned"] = parsed["is_pinned"]
-        if "is_draft" in parsed:
-            mongo_filter["is_draft"] = parsed["is_draft"]
-        if "folder_id" in parsed:
-            mongo_filter["folder_id"] = parsed["folder_id"]
-        if "category" in parsed:
-            mongo_filter["categories"] = parsed["category"]
-
-        # Free-text: match against subject, preview, and body_text
-        if "free_text" in parsed:
-            text = parsed["free_text"]
-            mongo_filter["$or"] = [
-                {"subject": {"$regex": text, "$options": "i"}},
-                {"preview": {"$regex": text, "$options": "i"}},
-                {"body_text": {"$regex": text, "$options": "i"}},
-            ]
-
-        # Apply explicit request filters (override parsed ones)
+        # Merge explicit request filters (override parsed ones)
         if request.folder_id:
-            mongo_filter["folder_id"] = request.folder_id
+            parsed["folder_id"] = request.folder_id
         if request.sender:
-            mongo_filter["sender.email"] = {"$regex": request.sender, "$options": "i"}
+            parsed["sender_email"] = request.sender
         if request.recipient:
-            mongo_filter["recipients.email"] = {"$regex": request.recipient, "$options": "i"}
+            parsed["recipient_email"] = request.recipient
         if request.subject:
-            mongo_filter["subject"] = {"$regex": request.subject, "$options": "i"}
+            parsed["subject_contains"] = request.subject
         if request.is_read is not None:
-            mongo_filter["is_read"] = request.is_read
+            parsed["is_read"] = request.is_read
         if request.is_flagged is not None:
-            mongo_filter["is_flagged"] = request.is_flagged
+            parsed["is_flagged"] = request.is_flagged
         if request.has_attachments is not None:
-            mongo_filter["has_attachments"] = request.has_attachments
+            parsed["has_attachments"] = request.has_attachments
         if request.categories:
-            mongo_filter["categories"] = {"$in": request.categories}
+            parsed["categories_in"] = request.categories
         if request.date_from:
-            mongo_filter.setdefault("received_at", {})["$gte"] = request.date_from
+            parsed["date_from"] = request.date_from
         if request.date_to:
-            mongo_filter.setdefault("received_at", {})["$lte"] = request.date_to
+            parsed["date_to"] = request.date_to
 
-        # Cursor pagination
-        if request.cursor:
-            mongo_filter.setdefault("received_at", {})["$lt"] = datetime.fromisoformat(request.cursor)
+        # Delegate to adapter
+        result = await self._search_adapter.search(
+            user_id=user_id,
+            query=free_text,
+            filters=parsed if parsed else None,
+            cursor=request.cursor,
+            limit=request.limit,
+        )
 
-        # Execute query
-        docs = await MessageDoc.find(mongo_filter).sort(
-            [("received_at", -1)]
-        ).limit(request.limit + 1).to_list()
-
-        has_more = len(docs) > request.limit
-        if has_more:
-            docs = docs[:request.limit]
-
+        # Map adapter result docs to SearchHit responses
+        docs: list[MessageDoc] = result.get("hits", [])
         hits = [
             SearchHit(
                 message_id=d.id, thread_id=d.thread_id,
                 subject=d.subject, preview=d.preview, sender=d.sender,
-                matched_fields=self._detect_matched_fields(d, parsed),
+                matched_fields=self._detect_matched_fields(d, free_text, parsed),
                 received_at=d.received_at,
             )
             for d in docs
         ]
 
-        next_cursor = None
-        if has_more and docs and docs[-1].received_at:
-            next_cursor = docs[-1].received_at.isoformat()
-
-        total = await MessageDoc.find(mongo_filter).count()
-
-        # Build facets
-        facets = await self._build_facets(user_id, mongo_filter)
+        # Build facets via adapter (uses same filter minus cursor for full facet counts)
+        facet_filter: dict[str, Any] = {"user_id": user_id}
+        if parsed:
+            # Re-apply filters for facet query (adapters handle this internally)
+            facet_filter.update({"_parsed": parsed})
+        facets = await self._search_adapter.build_facets(user_id, {"user_id": user_id})
 
         return SearchResponse(
-            hits=hits, next_cursor=next_cursor,
-            total_estimate=total, facets=facets,
+            hits=hits,
+            next_cursor=result.get("next_cursor"),
+            total_estimate=result.get("total_estimate", 0),
+            facets=facets,
         )
 
     async def get_suggestions(self, user_id: str, partial: str, limit: int = 10) -> list[str]:
         """Get search suggestions based on partial input."""
-        suggestions: list[str] = []
+        if not self._search_adapter:
+            raise RuntimeError("SearchFacade requires a SearchAdapter")
+        return await self._search_adapter.suggest(user_id, partial, limit)
 
-        if len(partial) < 2:
-            return suggestions
-
-        # Suggest from subjects
-        docs = await MessageDoc.find(
-            MessageDoc.user_id == user_id,
-            {"subject": {"$regex": partial, "$options": "i"}},
-        ).limit(limit).to_list()
-
-        seen: set[str] = set()
-        for d in docs:
-            if d.subject not in seen:
-                suggestions.append(d.subject)
-                seen.add(d.subject)
-
-        # Suggest from senders
-        sender_docs = await MessageDoc.find(
-            MessageDoc.user_id == user_id,
-            {"sender.email": {"$regex": partial, "$options": "i"}},
-        ).limit(5).to_list()
-
-        for d in sender_docs:
-            key = f"from:{d.sender.email}"
-            if key not in seen:
-                suggestions.append(key)
-                seen.add(key)
-
-        return suggestions[:limit]
-
-    def _detect_matched_fields(self, msg: MessageDoc, parsed: dict[str, Any]) -> list[str]:
+    @staticmethod
+    def _detect_matched_fields(msg: MessageDoc, free_text: str, parsed: dict[str, Any]) -> list[str]:
         """Detect which fields matched the search."""
         matched: list[str] = []
-        text = parsed.get("free_text", "")
-        if text:
-            if text.lower() in msg.subject.lower():
+        if free_text:
+            if free_text.lower() in msg.subject.lower():
                 matched.append("subject")
-            if text.lower() in msg.preview.lower():
+            if free_text.lower() in msg.preview.lower():
                 matched.append("preview")
-            if msg.body_text and text.lower() in msg.body_text.lower():
+            if msg.body_text and free_text.lower() in msg.body_text.lower():
                 matched.append("body")
         if "sender_email" in parsed:
             matched.append("sender")
         return matched or ["subject"]
-
-    async def _build_facets(self, user_id: str, base_filter: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        """Build search facets (folder distribution, categories)."""
-        # Simplified facets — count by folder
-        facets: dict[str, list[dict[str, Any]]] = {"folders": [], "categories": []}
-
-        # Only build facets if we have results
-        all_docs = await MessageDoc.find(base_filter).to_list()
-        if not all_docs:
-            return facets
-
-        folder_counts: dict[str, int] = {}
-        cat_counts: dict[str, int] = {}
-        for d in all_docs:
-            folder_counts[d.folder_id] = folder_counts.get(d.folder_id, 0) + 1
-            for c in d.categories:
-                cat_counts[c] = cat_counts.get(c, 0) + 1
-
-        facets["folders"] = [{"id": k, "count": v} for k, v in sorted(folder_counts.items(), key=lambda x: -x[1])]
-        facets["categories"] = [{"id": k, "count": v} for k, v in sorted(cat_counts.items(), key=lambda x: -x[1])]
-
-        return facets

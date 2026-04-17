@@ -24,11 +24,32 @@ from app.adapters.protocols import AdapterHealthStatus, FileStorageAdapter
 
 logger = logging.getLogger(__name__)
 
+# Max retries for I/O operations
+_IO_MAX_RETRIES = 3
+_IO_RETRY_DELAY = 0.5  # seconds
+
+
+async def _retry_async(func, *args, max_retries: int = _IO_MAX_RETRIES, delay: float = _IO_RETRY_DELAY):
+    """Retry an async callable with exponential backoff."""
+    import asyncio
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return await func(*args)
+        except (OSError, IOError) as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                wait = delay * (2 ** attempt)
+                logger.warning("I/O retry %d/%d after %.1fs: %s", attempt + 1, max_retries, wait, e)
+                await asyncio.sleep(wait)
+    raise last_exc  # type: ignore[misc]
+
 
 class NASStorageAdapter:
     """Local filesystem / NAS file storage adapter.
 
     Implements the FileStorageAdapter protocol using aiofiles for async I/O.
+    Uses atomic writes (write to .tmp, then rename) to prevent truncated files.
     """
 
     def __init__(self, base_path: str, max_file_size_mb: int = 25, allowed_extensions: list[str] | None = None):
@@ -55,7 +76,11 @@ class NASStorageAdapter:
         self, path: str, content: bytes, content_type: str,
         metadata: dict[str, str] | None = None,
     ) -> str:
-        """Store content at the given path under base_path."""
+        """Store content at the given path under base_path.
+
+        Uses atomic write: writes to a .tmp file first, then renames.
+        This prevents truncated files if the write fails mid-way.
+        """
         if len(content) > self._max_file_size_bytes:
             raise ValueError(
                 f"File size {len(content)} exceeds maximum {self._max_file_size_bytes} bytes"
@@ -64,8 +89,21 @@ class NASStorageAdapter:
         full_path = self._resolve_path(path)
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
-        async with aiofiles.open(full_path, "wb") as f:
-            await f.write(content)
+        # Atomic write: write to temp file, then rename
+        tmp_path = full_path.with_suffix(full_path.suffix + ".tmp")
+        try:
+            async with aiofiles.open(tmp_path, "wb") as f:
+                await f.write(content)
+            # os.rename is atomic on the same filesystem
+            os.rename(str(tmp_path), str(full_path))
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                if tmp_path.exists():
+                    os.remove(str(tmp_path))
+            except OSError:
+                pass
+            raise
 
         logger.debug("Stored %d bytes at %s", len(content), path)
         return path
@@ -77,8 +115,11 @@ class NASStorageAdapter:
         if not full_path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
-        async with aiofiles.open(full_path, "rb") as f:
-            content = await f.read()
+        async def _read():
+            async with aiofiles.open(full_path, "rb") as f:
+                return await f.read()
+
+        content = await _retry_async(_read)
 
         content_type = mimetypes.guess_type(str(full_path))[0] or "application/octet-stream"
         return content, content_type
@@ -117,7 +158,6 @@ class NASStorageAdapter:
         The ttl_seconds parameter is accepted for protocol compatibility
         but not enforced for NAS (auth middleware handles access control).
         """
-        # URL-safe path — the API router will resolve and serve the file
         return f"/api/v1/attachments/download?path={path}"
 
     async def list_files(self, prefix: str) -> list[str]:
@@ -129,6 +169,9 @@ class NASStorageAdapter:
         result: list[str] = []
         for root, _dirs, files in os.walk(full_path):
             for fname in files:
+                # Skip temp files
+                if fname.endswith(".tmp"):
+                    continue
                 abs_path = Path(root) / fname
                 rel_path = abs_path.relative_to(self._base_path)
                 result.append(str(rel_path))
@@ -139,10 +182,12 @@ class NASStorageAdapter:
         """Check filesystem accessibility."""
         start = time.monotonic()
         try:
-            # Write + read a canary file
+            # Write + read a canary file (atomic)
             canary = self._base_path / ".health_check"
-            async with aiofiles.open(canary, "w") as f:
+            tmp_canary = self._base_path / ".health_check.tmp"
+            async with aiofiles.open(tmp_canary, "w") as f:
                 await f.write("ok")
+            os.rename(str(tmp_canary), str(canary))
             await aiofiles.os.remove(canary)
 
             latency = (time.monotonic() - start) * 1000

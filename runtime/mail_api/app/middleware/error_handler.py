@@ -67,6 +67,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                     "details": exc.details,
                     "correlation_id": correlation_id,
                 },
+                headers=self._extra_headers(exc),
             )
         except Exception as exc:
             correlation_id = getattr(request.state, "correlation_id", None)
@@ -80,3 +81,12 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                     "correlation_id": correlation_id,
                 },
             )
+
+    @staticmethod
+    def _extra_headers(exc: MailDomainError) -> dict[str, str] | None:
+        """Return extra HTTP headers for specific error types."""
+        if isinstance(exc, RateLimitedError):
+            retry_after = exc.details.get("retry_after_seconds")
+            if retry_after:
+                return {"Retry-After": str(retry_after)}
+        return None

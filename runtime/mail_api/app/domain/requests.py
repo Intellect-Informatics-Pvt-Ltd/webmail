@@ -47,6 +47,7 @@ class MessageActionRequest(BaseModel):
     snooze_until: datetime | None = None
     reason: str | None = None
     idempotency_key: str | None = None
+    expected_version: int | None = None  # optimistic concurrency check
 
 
 # ── Drafts ───────────────────────────────────────────────────────────────────

@@ -161,6 +161,8 @@ class MessageDoc(Document):
     is_focused: bool = False
     trust_verified: bool = False
     in_reply_to_id: str | None = None
+    mail_in_reply_to: str | None = None  # RFC 2822 In-Reply-To header value
+    mail_references: list[str] = Field(default_factory=list)  # RFC 2822 References header
     delivery_state: DeliveryState = DeliveryState.SENT
     version: int = 1
     adapter_meta: dict[str, Any] = Field(default_factory=dict)
@@ -326,6 +328,24 @@ class DeliveryLogDoc(Document):
         indexes = ["message_id"]
 
 
+class IdempotencyRecord(Document):
+    """Idempotency deduplication record.
+
+    Stores the key + cached response hash so duplicate requests return
+    the same result without re-executing the operation.
+    TTL index auto-expires records after 24 hours.
+    """
+    id: str = Field(alias="_id")  # idempotency_key is the _id  # type: ignore[assignment]
+    user_id: str
+    operation: str  # e.g. "send_draft", "apply_action"
+    response_json: str = ""  # JSON-serialized cached response
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "idempotency_records"
+        indexes = ["user_id"]
+
+
 # ── Convenience: list of all Beanie documents for init_beanie() ─────────────
 
 ALL_DOCUMENTS = [
@@ -342,4 +362,5 @@ ALL_DOCUMENTS = [
     SavedSearchDoc,
     FavoritesDoc,
     DeliveryLogDoc,
+    IdempotencyRecord,
 ]

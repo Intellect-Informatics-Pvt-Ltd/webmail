@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.domain.enums import FolderKind, Importance, MessageAction
-from app.domain.errors import NotFoundError, ValidationError
+from app.domain.errors import ConcurrencyError, NotFoundError, ValidationError
 from app.domain.models import (
     CategoryDoc,
     FavoritesDoc,
     FolderDoc,
+    IdempotencyRecord,
     MailAttachmentMeta,
     MessageDoc,
     ThreadDoc,
@@ -184,6 +185,17 @@ class MailFacade:
         self, user_id: str, request: MessageActionRequest,
     ) -> BulkActionResult:
         """Apply an action to one or more messages (bulk)."""
+        # Idempotency check
+        if request.idempotency_key:
+            existing = await IdempotencyRecord.find_one(
+                IdempotencyRecord.id == request.idempotency_key,
+                IdempotencyRecord.user_id == user_id,
+            )
+            if existing and existing.response_json:
+                import json
+                cached = json.loads(existing.response_json)
+                return BulkActionResult(**cached)
+
         succeeded: list[str] = []
         failed: dict[str, str] = {}
 
@@ -192,6 +204,11 @@ class MailFacade:
                 doc = await MessageDoc.find_one(MessageDoc.id == msg_id, MessageDoc.user_id == user_id)
                 if not doc:
                     failed[msg_id] = "Not found"
+                    continue
+
+                # Optimistic concurrency check
+                if request.expected_version is not None and doc.version != request.expected_version:
+                    failed[msg_id] = f"Version mismatch: expected {request.expected_version}, actual {doc.version}"
                     continue
 
                 action = request.action
@@ -251,7 +268,22 @@ class MailFacade:
         for tid in affected_threads:
             await self._refresh_thread(user_id, tid)
 
-        return BulkActionResult(succeeded_ids=succeeded, failed=failed)
+        result = BulkActionResult(succeeded_ids=succeeded, failed=failed)
+
+        # Store idempotency record
+        if request.idempotency_key:
+            import json
+            try:
+                await IdempotencyRecord(
+                    id=request.idempotency_key,
+                    user_id=user_id,
+                    operation="apply_action",
+                    response_json=json.dumps(result.model_dump(), default=str),
+                ).insert()
+            except Exception:
+                pass  # Duplicate key — already stored by a concurrent request
+
+        return result
 
     async def upsert_message(self, user_id: str, message: MessageDoc) -> MessageDoc:
         """Create or update a message."""

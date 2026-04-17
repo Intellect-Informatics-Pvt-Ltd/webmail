@@ -118,6 +118,8 @@ class WorkersConfig(BaseModel):
     snooze_check_interval_seconds: int = 60
     send_retry_max_attempts: int = 3
     sync_interval_seconds: int = 300
+    scheduler_interval_seconds: int = 30
+    retry_backoff_base_seconds: int = 60
 
 
 class LoggingConfig(BaseModel):

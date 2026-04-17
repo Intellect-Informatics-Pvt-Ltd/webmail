@@ -17,8 +17,13 @@ router = APIRouter(prefix="/api/v1", tags=["drafts"])
 def _get_facade():
     from app.main import get_registry
     from app.services.compose_facade import ComposeFacade
+    from config.settings import get_settings
     registry = get_registry()
-    return ComposeFacade(transport=registry.transport)
+    settings = get_settings()
+    return ComposeFacade(
+        transport=registry.transport,
+        default_from_address=settings.provider.mailpit.from_address,
+    )
 
 
 @router.get("/drafts", response_model=list[DraftResponse])
@@ -66,7 +71,10 @@ async def send_draft(
     draft_id: str, body: SendDraftRequest | None = None,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> DeliveryReceipt:
-    return await _get_facade().send_draft(user.user_id, draft_id, body or SendDraftRequest())
+    return await _get_facade().send_draft(
+        user.user_id, draft_id, body or SendDraftRequest(),
+        user_email=user.email, user_name=user.display_name,
+    )
 
 
 @router.post("/messages/{message_id}/retry", response_model=DeliveryReceipt)

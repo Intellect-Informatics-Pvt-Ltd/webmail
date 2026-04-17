@@ -147,10 +147,16 @@ class SearchAdapter(Protocol):
         filters: dict[str, Any] | None = None,
         cursor: str | None = None, limit: int = 50,
     ) -> dict[str, Any]:
-        """Returns {'hits': [...], 'next_cursor': ..., 'total_estimate': ..., 'facets': ...}"""
+        """Returns {'hits': [MessageDoc...], 'next_cursor': ..., 'total_estimate': int}"""
         ...
 
     async def suggest(self, user_id: str, partial: str, limit: int = 10) -> list[str]:
+        ...
+
+    async def build_facets(
+        self, user_id: str, mongo_filter: dict[str, Any],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Build facets (folder distribution, category breakdown) from matching docs."""
         ...
 
     async def health_check(self) -> AdapterHealthStatus:
