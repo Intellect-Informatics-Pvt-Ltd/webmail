@@ -1,10 +1,18 @@
 import { Outlet, Link, createRootRoute, HeadContent, Scripts, ClientOnly } from "@tanstack/react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { toast } from "sonner";
 
 import appCss from "../styles.css?url";
 import { ThemeManager } from "@/components/theme-manager";
 import { GlobalOverlays } from "@/components/global-overlays";
 import { ComposeWindow } from "@/components/compose/compose-window";
 import { Toaster } from "@/components/ui/sonner";
+import { ShortcutProvider } from "@/lib/shortcuts/provider";
+import { QueryContextProvider } from "@/lib/query/context";
+import { getBrowserQueryClient } from "@/lib/query/client";
+import { usePWAUpdate } from "@/lib/pwa/use-pwa-update";
+import { attachDeltaSync } from "@/lib/sync/delta";
 
 function NotFoundComponent() {
   return (
@@ -33,14 +41,13 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "PSense Mail" },
+      { name: "description", content: "PSense Mail — Enterprise workspace" },
+      { name: "author", content: "PSense.ai" },
+      { property: "og:title", content: "PSense Mail" },
+      { property: "og:description", content: "PSense Mail — Enterprise workspace" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
       {
@@ -69,15 +76,51 @@ function RootShell({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
+  const queryClient = getBrowserQueryClient();
+  const { needsRefresh, isOfflineReady, updateSW } = usePWAUpdate((data) => {
+    // SW posted DELTA_SYNC_REQUESTED — trigger a sync cycle
+    if ((data as { type?: string })?.type === "DELTA_SYNC_REQUESTED") {
+      void queryClient.invalidateQueries();
+    }
+  });
+
+  // Show toasts for PWA lifecycle events
+  useEffect(() => {
+    if (isOfflineReady) {
+      toast.success("PSense Mail is ready to work offline.");
+    }
+  }, [isOfflineReady]);
+
+  useEffect(() => {
+    if (needsRefresh) {
+      toast("Update available", {
+        description: "A new version of PSense Mail is ready.",
+        action: { label: "Reload", onClick: () => void updateSW(true) },
+        duration: Infinity,
+      });
+    }
+  }, [needsRefresh, updateSW]);
+
+  // Attach delta sync once the client mounts.
+  useEffect(() => {
+    const ctx = { tenantId: "default", accountId: "default" };
+    const detach = attachDeltaSync("default", ctx, queryClient, 30_000);
+    return detach;
+  }, [queryClient]);
+
   return (
-    <>
-      <ThemeManager />
-      <Outlet />
-      <ClientOnly fallback={null}>
-        <GlobalOverlays />
-        <ComposeWindow />
-      </ClientOnly>
-      <Toaster />
-    </>
+    <QueryClientProvider client={queryClient}>
+      <QueryContextProvider tenantId="default" accountId="default">
+        <ShortcutProvider>
+          <ThemeManager />
+          <Outlet />
+          <ClientOnly fallback={null}>
+            <GlobalOverlays />
+            <ComposeWindow />
+          </ClientOnly>
+          <Toaster />
+        </ShortcutProvider>
+      </QueryContextProvider>
+    </QueryClientProvider>
   );
 }

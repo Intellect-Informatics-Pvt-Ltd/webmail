@@ -109,6 +109,10 @@ def create_app() -> FastAPI:
     from app.middleware.error_handler import ErrorHandlerMiddleware
     app.add_middleware(ErrorHandlerMiddleware)
 
+    # Idempotency cache (read-through/write-through for mutating requests)
+    from app.middleware.idempotency import IdempotencyMiddleware
+    app.add_middleware(IdempotencyMiddleware)
+
     # Correlation ID
     from app.middleware.correlation import CorrelationMiddleware
     app.add_middleware(CorrelationMiddleware, header_name=settings.logging.correlation_header)
@@ -134,6 +138,7 @@ def create_app() -> FastAPI:
     from app.api.routers.preferences import router as preferences_router
     from app.api.routers.saved_searches import router as saved_searches_router
     from app.api.routers.attachments import router as attachments_router
+    from app.api.routers.sync import router as sync_router
 
     app.include_router(messages_router)
     app.include_router(threads_router)
@@ -147,6 +152,7 @@ def create_app() -> FastAPI:
     app.include_router(preferences_router)
     app.include_router(saved_searches_router)
     app.include_router(attachments_router)
+    app.include_router(sync_router)
 
     return app
 

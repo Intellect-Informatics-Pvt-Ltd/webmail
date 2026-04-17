@@ -1,7 +1,6 @@
 """PSense Mail — Domain enumerations.
 
-These mirror the TypeScript types in webmail_ui/src/types/mail.ts and the
-reference enums in thoughts/shared/plans/mail_facade_reference.py.
+These mirror the TypeScript types in webmail_ui/src/types/mail.ts.
 """
 from __future__ import annotations
 
@@ -108,3 +107,53 @@ class DefaultSort(str, Enum):
 class DefaultReply(str, Enum):
     REPLY = "reply"
     REPLY_ALL = "replyAll"
+
+
+class OpLogKind(str, Enum):
+    """Kind of operation recorded in the op-log for delta sync."""
+    UPSERT = "upsert"
+    DELETE = "delete"
+
+
+class OpLogEntity(str, Enum):
+    """Entity type recorded in op-log entries."""
+    MESSAGE = "message"
+    THREAD = "thread"
+    FOLDER = "folder"
+    CATEGORY = "category"
+    RULE = "rule"
+    TEMPLATE = "template"
+    SIGNATURE = "signature"
+    DRAFT = "draft"
+    PREFERENCES = "preferences"
+    SAVED_SEARCH = "saved_search"
+
+
+class AccountRole(str, Enum):
+    """Role of a user with respect to an account."""
+    OWNER = "owner"
+    DELEGATE_READ = "delegate_read"
+    DELEGATE_SEND = "delegate_send"
+
+
+class ProviderKind(str, Enum):
+    """Mail provider type."""
+    MEMORY = "memory"
+    MAILPIT = "mailpit"
+    GMAIL = "gmail"
+    MICROSOFT_GRAPH = "microsoft_graph"
+
+
+class AvState(str, Enum):
+    """Antivirus scan state for attachments."""
+    UNKNOWN = "unknown"
+    CLEAN = "clean"
+    INFECTED = "infected"
+    SKIPPED = "skipped"
+
+
+class PreviewState(str, Enum):
+    """Attachment preview generation state."""
+    NONE = "none"
+    READY = "ready"
+    FAILED = "failed"

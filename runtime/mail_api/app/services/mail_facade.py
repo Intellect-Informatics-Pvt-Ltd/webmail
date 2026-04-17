@@ -1,7 +1,8 @@
 """PSense Mail — MailFacade service.
 
 Core mail operations: messages, folders, favorites, threads.
-Maps every Zustand mail-store action to a server-side operation.
+All queries are scoped to (tenant_id, user_id) and write op-log entries
+for delta sync on every mutation.
 """
 from __future__ import annotations
 
@@ -9,14 +10,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from app.domain.enums import FolderKind, Importance, MessageAction
+from app.domain.enums import FolderKind, MessageAction, OpLogEntity, OpLogKind
 from app.domain.errors import ConcurrencyError, NotFoundError, ValidationError
 from app.domain.models import (
-    CategoryDoc,
     FavoritesDoc,
     FolderDoc,
     IdempotencyRecord,
-    MailAttachmentMeta,
     MessageDoc,
     ThreadDoc,
 )
@@ -31,6 +30,7 @@ from app.domain.responses import (
     MessageSummary,
     ThreadDetail,
 )
+from app.services.op_log import append_op
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +83,18 @@ def _folder_to_response(f: FolderDoc, unread: int = 0, total: int = 0) -> Folder
 
 
 class MailFacade:
-    """Core mail operations facade."""
+    """Core mail operations facade.
+
+    All mutating methods accept an optional (tenant_id, account_id) pair for
+    scoping. They default to ("default", user_id) so existing callers that
+    only pass user_id continue to work during the Phase 1→2 migration.
+    """
 
     # ── Messages ─────────────────────────────────────────────────────────
 
     async def list_messages(
         self, user_id: str, query: MessageListQuery,
+        tenant_id: str = "default",
     ) -> CursorPage[MessageSummary]:
         """List messages with filtering, sorting, and cursor pagination."""
         filters: dict[str, Any] = {"user_id": user_id}
@@ -148,7 +154,7 @@ class MailFacade:
 
         return CursorPage(items=items, next_cursor=next_cursor, total_estimate=total)
 
-    async def get_message(self, user_id: str, message_id: str) -> MessageDetail:
+    async def get_message(self, user_id: str, message_id: str, tenant_id: str = "default") -> MessageDetail:
         """Get full message detail."""
         doc = await MessageDoc.find_one(MessageDoc.id == message_id, MessageDoc.user_id == user_id)
         if not doc:
@@ -162,7 +168,7 @@ class MailFacade:
 
         return _msg_to_detail(doc)
 
-    async def get_thread(self, user_id: str, thread_id: str) -> ThreadDetail:
+    async def get_thread(self, user_id: str, thread_id: str, tenant_id: str = "default") -> ThreadDetail:
         """Get thread with all its messages."""
         thread = await ThreadDoc.find_one(ThreadDoc.id == thread_id, ThreadDoc.user_id == user_id)
         if not thread:
@@ -183,6 +189,7 @@ class MailFacade:
 
     async def apply_action(
         self, user_id: str, request: MessageActionRequest,
+        tenant_id: str = "default", account_id: str = "",
     ) -> BulkActionResult:
         """Apply an action to one or more messages (bulk)."""
         # Idempotency check
@@ -256,6 +263,16 @@ class MailFacade:
                 await doc.save()
                 succeeded.append(msg_id)
 
+                # Append to op-log for delta sync
+                await append_op(
+                    tenant_id=tenant_id,
+                    account_id=account_id or user_id,
+                    kind=OpLogKind.UPSERT,
+                    entity=OpLogEntity.MESSAGE,
+                    entity_id=msg_id,
+                    payload=doc.model_dump(mode="json"),
+                )
+
             except Exception as e:
                 failed[msg_id] = str(e)
 
@@ -266,7 +283,7 @@ class MailFacade:
             if doc:
                 affected_threads.add(doc.thread_id)
         for tid in affected_threads:
-            await self._refresh_thread(user_id, tid)
+            await self._refresh_thread(user_id, tid, tenant_id=tenant_id, account_id=account_id)
 
         result = BulkActionResult(succeeded_ids=succeeded, failed=failed)
 
@@ -276,7 +293,9 @@ class MailFacade:
             try:
                 await IdempotencyRecord(
                     id=request.idempotency_key,
+                    tenant_id=tenant_id,
                     user_id=user_id,
+                    account_id=account_id or user_id,
                     operation="apply_action",
                     response_json=json.dumps(result.model_dump(), default=str),
                 ).insert()
@@ -351,13 +370,27 @@ class MailFacade:
 
         return result
 
-    async def create_folder(self, user_id: str, name: str, parent_id: str | None = None) -> FolderResponse:
+    async def create_folder(
+        self, user_id: str, name: str, parent_id: str | None = None,
+        tenant_id: str = "default", account_id: str = "",
+    ) -> FolderResponse:
         """Create a custom folder."""
-        folder = FolderDoc(user_id=user_id, name=name, kind=FolderKind.CUSTOM, parent_id=parent_id)
+        folder = FolderDoc(
+            user_id=user_id, tenant_id=tenant_id, account_id=account_id or user_id,
+            name=name, kind=FolderKind.CUSTOM, parent_id=parent_id,
+        )
         await folder.insert()
+        await append_op(
+            tenant_id=tenant_id, account_id=account_id or user_id,
+            kind=OpLogKind.UPSERT, entity=OpLogEntity.FOLDER,
+            entity_id=folder.id, payload=folder.model_dump(mode="json"),
+        )
         return _folder_to_response(folder)
 
-    async def rename_folder(self, user_id: str, folder_id: str, name: str) -> FolderResponse:
+    async def rename_folder(
+        self, user_id: str, folder_id: str, name: str,
+        tenant_id: str = "default", account_id: str = "",
+    ) -> FolderResponse:
         """Rename a folder."""
         folder = await FolderDoc.find_one(FolderDoc.id == folder_id, FolderDoc.user_id == user_id)
         if not folder:
@@ -365,10 +398,19 @@ class MailFacade:
         if folder.system:
             raise ValidationError("Cannot rename system folders")
         folder.name = name
+        folder.version += 1
         await folder.save()
+        await append_op(
+            tenant_id=tenant_id, account_id=account_id or user_id,
+            kind=OpLogKind.UPSERT, entity=OpLogEntity.FOLDER,
+            entity_id=folder.id, payload=folder.model_dump(mode="json"),
+        )
         return _folder_to_response(folder)
 
-    async def delete_folder(self, user_id: str, folder_id: str) -> None:
+    async def delete_folder(
+        self, user_id: str, folder_id: str,
+        tenant_id: str = "default", account_id: str = "",
+    ) -> None:
         """Delete a custom folder. Moves contained messages to inbox."""
         folder = await FolderDoc.find_one(FolderDoc.id == folder_id, FolderDoc.user_id == user_id)
         if not folder:
@@ -387,7 +429,15 @@ class MailFacade:
             fav.folder_ids.remove(folder_id)
             await fav.save()
 
-        await folder.delete()
+        # Soft-delete (tombstone) then emit op-log
+        folder.deleted_at = datetime.now(timezone.utc)
+        folder.version += 1
+        await folder.save()
+        await append_op(
+            tenant_id=tenant_id, account_id=account_id or user_id,
+            kind=OpLogKind.DELETE, entity=OpLogEntity.FOLDER,
+            entity_id=folder_id, payload={"deleted_at": folder.deleted_at.isoformat()},
+        )
 
     async def get_folder_counts(self, user_id: str) -> FolderCountsResponse:
         """Get unread/total counts for all folders."""
@@ -420,7 +470,10 @@ class MailFacade:
 
     # ── Thread refresh ───────────────────────────────────────────────────
 
-    async def _refresh_thread(self, user_id: str, thread_id: str) -> None:
+    async def _refresh_thread(
+        self, user_id: str, thread_id: str,
+        tenant_id: str = "default", account_id: str = "",
+    ) -> None:
         """Recompute thread aggregates from its messages."""
         messages = await MessageDoc.find(
             MessageDoc.user_id == user_id, MessageDoc.thread_id == thread_id,
@@ -443,4 +496,10 @@ class MailFacade:
         thread.is_flagged = any(m.is_flagged for m in messages)
         thread.participant_emails = list({m.sender.email for m in messages})
         thread.message_ids = [m.id for m in messages]
+        thread.version += 1
         await thread.save()
+        await append_op(
+            tenant_id=tenant_id, account_id=account_id or user_id,
+            kind=OpLogKind.UPSERT, entity=OpLogEntity.THREAD,
+            entity_id=thread.id, payload=thread.model_dump(mode="json"),
+        )

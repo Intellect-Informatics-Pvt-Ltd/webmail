@@ -1,6 +1,6 @@
 # AGENTS.md — PSense Mail
 
-This file is the Kiro/agent binding layer for **PSense Mail**. It points to the platform-neutral toolkit in `.project/` and provides project-specific context. Keep this file slim — all reusable logic lives in `.project/`.
+This file is the agent binding layer for **PSense Mail**. It points to the platform-neutral toolkit in `.project/` and provides project-specific context. Keep this file slim — all reusable logic lives in `.project/`.
 
 ---
 
@@ -12,11 +12,15 @@ This file is the Kiro/agent binding layer for **PSense Mail**. It points to the 
 - **React 19 + Vite 7**
 - **Tailwind v4** with `oklch` design tokens in `webmail_ui/src/styles.css`
 - **shadcn/ui** (Radix primitives, never roll custom focus traps or ARIA)
-- **Zustand v5** with `persist` for client state
+- **Zustand v5** (ephemeral UI-only state — selection, overlays, pane sizes)
+- **TanStack Query v5** (server cache, IDB-persisted)
+- **Dexie** (IndexedDB — entity cache, outbox, op-log, blobs)
 - **Tiptap v3** for the compose editor
 - **`@tanstack/react-virtual`** for virtualized message lists
 
-All source code lives under `webmail_ui/`. Plans, specs, and research live under `thoughts/`.
+Frontend source lives under `webmail_ui/`.
+Backend source lives under `runtime/mail_api/` (FastAPI + MongoDB via Beanie).
+Plans, specs, and research live under `thoughts/`.
 
 ---
 
@@ -26,17 +30,15 @@ All source code lives under `webmail_ui/`. Plans, specs, and research live under
 |----------|----------|
 | Agent playbooks | `.project/agents/` |
 | Command playbooks | `.project/commands/` |
-| Project plans & BRD | `thoughts/shared/plans/` |
-| Design system spec | `thoughts/shared/plans/03-design-system.md` |
-| Backend architecture | `thoughts/shared/plans/04-backend-architecture.md` |
-| Python backend spec | `thoughts/shared/plans/mail_backend_facade_spec.md` |
+| **Unified roadmap (single source of truth)** | `thoughts/shared/plans/05-roadmap.md` |
 
 ### Quick-start for any agent
 
-1. Read `thoughts/shared/plans/00-README.md` for the project index.
+1. Read `thoughts/shared/plans/05-roadmap.md` for full product context, architecture, data model, API contract, offline design, and phased plan.
 2. Pick a role playbook from `.project/agents/`.
 3. Pick a workflow command from `.project/commands/`.
-4. For codebase specifics, start in `webmail_ui/src/`.
+4. For frontend specifics, start in `webmail_ui/src/`.
+5. For backend specifics, start in `runtime/mail_api/app/`.
 
 ---
 
@@ -47,7 +49,7 @@ All source code lives under `webmail_ui/`. Plans, specs, and research live under
 | `codebase-analyzer` | Understand HOW specific code works (data flow, logic, patterns) |
 | `codebase-locator` | Find WHERE files and components live |
 | `codebase-pattern-finder` | Find existing patterns to model new work after |
-| `thoughts-analyzer` | Deep-dive on a research or planning document |
+| `thoughts-analyzer` | Deep-dive on the roadmap or a planning document |
 | `thoughts-locator` | Discover relevant docs in `thoughts/` |
 | `web-search-researcher` | Find current external docs, library versions, best practices |
 
@@ -76,7 +78,7 @@ All source code lives under `webmail_ui/`. Plans, specs, and research live under
 webmail_ui/
 ├── src/
 │   ├── routes/                  # TanStack Start file-based routes
-│   │   ├── __root.tsx           # Shell + providers
+│   │   ├── __root.tsx           # Shell + providers (QueryClientProvider, ShortcutProvider)
 │   │   ├── _app.tsx             # Auth-protected layout (header + rail + footer)
 │   │   ├── _app.mail.tsx        # Mail layout (sidebar + outlet)
 │   │   ├── _app.mail.{inbox,focused,other,drafts,sent,archive,snoozed,flagged,deleted,junk}.tsx
@@ -86,28 +88,57 @@ webmail_ui/
 │   │   ├── _app.rules.tsx
 │   │   ├── _app.templates.tsx
 │   │   ├── _app.settings.mail.tsx
-│   │   └── _app.settings.preferences.tsx  # 🚧 stub
+│   │   ├── _app.settings.preferences.tsx
+│   │   ├── _app.settings.signatures.tsx
+│   │   ├── _app.calendar.tsx / .day / .week / .month
+│   │   └── _app.contacts.tsx / .index / .$contactId
 │   ├── components/
 │   │   ├── layout/              # AppHeader, AppRail, MailSidebar
 │   │   ├── mail/                # MailWorkspace, MessageList, MessageRow, ReadingPane
 │   │   ├── compose/             # ComposeWindow (Tiptap)
-│   │   ├── calendar/            # 🚧 placeholder components
-│   │   ├── contacts/            # 🚧 placeholder components
+│   │   ├── calendar/            # CalendarView components
+│   │   ├── contacts/            # ContactList, ContactDetail
 │   │   ├── global-overlays.tsx  # ⌘K palette + ? shortcuts modal
 │   │   ├── powered-by-footer.tsx
 │   │   ├── psense-logo.tsx
 │   │   ├── theme-manager.tsx
 │   │   └── ui/                  # shadcn primitives (never modify directly)
 │   ├── stores/
-│   │   ├── mail-store.ts        # messages, folders, rules, templates, signatures
-│   │   ├── compose-store.ts     # open draft + saved drafts
-│   │   └── ui-store.ts          # density, theme, pane sizes, prefs
-│   ├── data/                    # Mock seed data (messages, folders, categories)
+│   │   ├── mail-store.ts        # ⚠ TRANSITIONAL — being migrated to TanStack Query
+│   │   ├── compose-store.ts     # open draft reference (drafts live in Dexie after Phase 2)
+│   │   └── ui-store.ts          # density, theme, pane sizes, prefs (ephemeral UI only)
+│   ├── lib/
+│   │   ├── db/                  # Dexie schema + singleton (IDB storage)
+│   │   ├── api/                 # Generated OpenAPI types + hand-rolled fetch client
+│   │   ├── query/               # QueryClient factory, IDB persister, key factories
+│   │   ├── shortcuts/           # Central shortcut registry + provider + hook
+│   │   ├── sync/                # Delta replay, outbox drain, op-log drain
+│   │   ├── mail-format.ts
+│   │   ├── calendar-utils.ts
+│   │   └── utils.ts
+│   ├── hooks/
+│   │   ├── queries/             # useMessages, useThread, useFolders, usePreferences, …
+│   │   ├── mutations/           # useToggleRead, useArchive, useSendDraft, …
+│   │   └── ui/                  # use-mobile, use-shortcut
+│   ├── data/                    # Mock seed data (still used by Zustand fallback path)
 │   ├── types/mail.ts            # All domain types
-│   ├── hooks/                   # use-filtered-messages, use-mobile
-│   ├── lib/                     # mail-format, calendar-utils
 │   └── styles.css               # Design tokens (single source of truth for all colors)
 └── package.json
+
+runtime/mail_api/
+├── app/
+│   ├── api/routers/             # All FastAPI routers (prefix /api/v1)
+│   ├── domain/                  # enums, errors, models (Beanie), requests, responses
+│   ├── services/                # Façades: mail, compose, search, attachment, admin, …
+│   ├── adapters/                # db (mongo), transport, file_storage, search, inbound
+│   ├── middleware/              # auth, correlation, error_handler, idempotency
+│   ├── workers/                 # scheduler, snooze, retry, inbound_poller
+│   ├── seed/                    # demo_data.py
+│   └── main.py                  # App factory + lifespan
+├── config/
+│   ├── default.yaml             # Default config (auth: KeyCloak, db: mongo/memory)
+│   └── settings.py
+└── tests/                       # pytest + pytest-asyncio + mongomock
 ```
 
 ---
@@ -125,10 +156,21 @@ webmail_ui/
 - Motion: **framer-motion only** for compose open/close, command palette, toast. No bouncy springs.
 - Every list surface needs an **empty state** (icon + headline + optional CTA).
 
-### State
-- **Zustand** for all client state today (v1.0 is 100% client-side, no network).
-- Stores are persisted: `psense-mail-data`, `psense-compose`, per-key UI prefs.
-- Future (v1.1+): Zustand stays for ephemeral UI only; server data moves to **TanStack Query**.
+### State architecture (Phase 1+ shape)
+- **TanStack Query** for all server data (messages, threads, folders, drafts, templates, rules, …).
+- **Dexie (IDB)** as the Query persister + outbox + op-log + attachment blobs. Never `localStorage` for mail data.
+- **Zustand** for ephemeral UI only (selection, overlay open/close, pane sizes, reading-pane placement, theme).
+- **`mail-store.ts`** is transitional — being deleted after Phase 2 API cutover. Do not add new data to it.
+
+### API client
+- All fetch calls go through `src/lib/api/client.ts` (injects auth header, `X-Correlation-ID`, `Idempotency-Key`, decodes error envelope).
+- Types are generated from the backend's `/openapi.json` via `npm run gen:api`.
+- Never import `types.gen.ts` directly from components — always go through a typed hook.
+
+### Keyboard shortcuts
+- All shortcuts are registered in `src/lib/shortcuts/registry.ts` via `registerShortcut()`.
+- The `?` modal reads from the registry — it is the canonical list.
+- Use `useShortcut(id)` hook in components — do NOT add raw `keydown` listeners.
 
 ### Routing
 - File-based TanStack Start routes under `src/routes/`.
@@ -136,46 +178,63 @@ webmail_ui/
 - Mail routes live under `_app.mail`.
 
 ### Testing
-- No test framework is set up yet (v1.0 is a mock client).
-- When adding tests, use **Vitest** (standard for Vite projects) with `--run` flag for single execution.
+- **Frontend**: Vitest + `@testing-library/react`. Run with `npm run test` in `webmail_ui/`.
+- **Backend**: pytest + pytest-asyncio + mongomock. Run with `pytest` in `runtime/mail_api/`.
+- Unit tests live alongside the source; integration tests in `tests/` at the respective root.
 
 ---
 
 ## Build & dev commands
 
 ```bash
-# All commands run from webmail_ui/
-cd webmail_ui
+# Frontend — run from webmail_ui/
+npm run dev          # Start dev server
+npm run build        # Production build
+npm run test         # Vitest unit tests
+npm run test:run     # Single-run tests (CI)
+npm run lint         # ESLint
+npm run format       # Prettier
+npm run gen:api      # Regenerate OpenAPI TypeScript types from backend
 
-npm run dev        # Start dev server (run manually — do not use as a background process)
-npm run build      # Production build
-npm run lint       # ESLint
-npm run format     # Prettier
+# Backend — run from runtime/mail_api/
+uvicorn app.main:app --reload --port 8000   # Dev server
+pytest                                       # All tests
+pytest tests/test_api_basic.py -v           # Specific test file
 ```
 
 ---
 
 ## Current build status
 
-### ✅ Complete (v1.0 mock client)
+### ✅ Complete (v1.0 mock client + Phase 0)
 - Full three-pane mail UI with all standard folders
+- Calendar (day/week/month) and Contacts routes
+- Signatures settings UI
 - Compose window (Tiptap, floating / full-screen / minimized)
 - Search with facets, rules center, templates manager
 - Command palette (⌘K), keyboard shortcuts modal (?), toast notifications
 - Light/dark themes, three density modes, reading pane placement
+- FastAPI backend scaffolded with all façades, adapters, workers (in-process)
+- Documentation consolidated into `thoughts/shared/plans/05-roadmap.md`
 
-### 🚧 Pending (next up)
-- Settings → Preferences full panel
-- Signatures management UI
-- Saved searches UI
-- Multi-draft compose stack
-- Calendar v0, Contacts v0, Tasks v0
+### 🚧 In progress (Phase 1)
+- Dexie IDB storage layer replacing localStorage for mail data
+- Typed OpenAPI SDK (openapi-typescript)
+- TanStack Query mounted with IDB persister
+- Central keyboard shortcut registry
+- Backend: tenant_id / account_id on all models
+- Backend: idempotency middleware
+- Backend: op-log collection + delta sync endpoint
 
-### 🔮 Not started (v1.1+)
-- Lovable Cloud backend (Postgres + Auth + Storage + Edge Functions)
-- TanStack Query data layer
-- Real mail provider integration (Microsoft Graph first)
-- AI Copilot
+### 🔮 Not started (Phase 2+)
+- Full API cutover (TanStack Query hooks for all surfaces)
+- Compose outbox (offline send queue)
+- Service worker (Workbox, offline shell)
+- Delta sync client (Tier 4 offline)
+- Safe HTML rendering (DOMPurify + sandboxed iframe) — Phase 4
+- KeyCloak SSO enabled — Phase 4
+- ARQ external worker queue — Phase 5
+- Microsoft Graph provider — Phase 6
 
 ---
 
@@ -185,25 +244,23 @@ npm run format     # Prettier
 thoughts/
 └── shared/
     └── plans/
-        ├── 00-README.md              # Project index
-        ├── 01-brd.md                 # Business requirements
-        ├── 02-implementation-plan.md # Build status + build order
-        ├── 03-design-system.md       # Brand tokens, typography, components
-        ├── 04-backend-architecture.md # Target Cloud schema, RLS, edge functions
-        └── mail_backend_facade_spec.md # Python FastAPI backend contract
+        ├── 00-README.md              # Index (points here)
+        └── 05-roadmap.md             # ← THE document; all plans live here
 ```
 
 ---
 
-## Python backend (future)
+## Backend (Python FastAPI)
 
-A Python FastAPI backend is specced in `thoughts/shared/plans/mail_backend_facade_spec.md`. It is **not yet implemented**. Key design points:
+Located at `runtime/mail_api/`. Key design points from `thoughts/shared/plans/05-roadmap.md §18`:
 
-- Async-first, provider-agnostic, typed
-- Façades: `MailFacade`, `ComposeFacade`, `SearchFacade`, `AttachmentFacade`, `AdminFacade`
-- Domain exceptions hierarchy rooted at `MailDomainError`
-- Local dev mode targets MailPit as the transport sink
-- Source layout: `app/{api,domain,services,adapters,workers}/`
+- Async-first, provider-agnostic, typed.
+- Façades: `MailFacade`, `ComposeFacade`, `SearchFacade`, `AttachmentFacade`, `AdminFacade`, plus CRUD facades for rules, templates, signatures, categories, preferences, saved searches.
+- Domain exceptions hierarchy rooted at `MailDomainError` (`app/domain/errors.py`).
+- Adapter registry pattern: `AdapterRegistry` selects concrete adapters from config (transport, storage, search).
+- Local dev mode: `database.backend=memory`, `provider.active=memory`, `auth.enabled=false`.
+- Auth target: KeyCloak OIDC (configured in `config/default.yaml`, disabled by default for dev).
+- Workers: currently in-process via `WorkerManager`; Phase 5 moves to ARQ + Redis.
 
 ---
 
@@ -212,3 +269,4 @@ A Python FastAPI backend is specced in `thoughts/shared/plans/mail_backend_facad
 - Platform-neutral toolkit: `.project/README.md`
 - Agent template: `.project/agents/TEMPLATE.md`
 - Command template: `.project/commands/TEMPLATE.md`
+- Unified roadmap: `thoughts/shared/plans/05-roadmap.md`
