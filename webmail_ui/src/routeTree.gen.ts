@@ -20,6 +20,7 @@ import { Route as AppContactsIndexRouteImport } from './routes/_app.contacts.ind
 import { Route as AppSettingsSignaturesRouteImport } from './routes/_app.settings.signatures'
 import { Route as AppSettingsPreferencesRouteImport } from './routes/_app.settings.preferences'
 import { Route as AppSettingsMailRouteImport } from './routes/_app.settings.mail'
+import { Route as AppSettingsAccountsRouteImport } from './routes/_app.settings.accounts'
 import { Route as AppMailSnoozedRouteImport } from './routes/_app.mail.snoozed'
 import { Route as AppMailSentRouteImport } from './routes/_app.mail.sent'
 import { Route as AppMailSearchRouteImport } from './routes/_app.mail.search'
@@ -76,6 +77,11 @@ const AppContactsIndexRoute = AppContactsIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppContactsRoute,
+} as any)
+const AppSettingsAccountsRoute = AppSettingsAccountsRouteImport.update({
+  id: '/settings/accounts',
+  path: '/settings/accounts',
+  getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsSignaturesRoute = AppSettingsSignaturesRouteImport.update({
   id: '/settings/signatures',
@@ -201,6 +207,7 @@ export interface FileRoutesByFullPath {
   '/mail/search': typeof AppMailSearchRoute
   '/mail/sent': typeof AppMailSentRoute
   '/mail/snoozed': typeof AppMailSnoozedRoute
+  '/settings/accounts': typeof AppSettingsAccountsRoute
   '/settings/mail': typeof AppSettingsMailRoute
   '/settings/preferences': typeof AppSettingsPreferencesRoute
   '/settings/signatures': typeof AppSettingsSignaturesRoute
@@ -229,6 +236,7 @@ export interface FileRoutesByTo {
   '/mail/search': typeof AppMailSearchRoute
   '/mail/sent': typeof AppMailSentRoute
   '/mail/snoozed': typeof AppMailSnoozedRoute
+  '/settings/accounts': typeof AppSettingsAccountsRoute
   '/settings/mail': typeof AppSettingsMailRoute
   '/settings/preferences': typeof AppSettingsPreferencesRoute
   '/settings/signatures': typeof AppSettingsSignaturesRoute
@@ -260,6 +268,7 @@ export interface FileRoutesById {
   '/_app/mail/search': typeof AppMailSearchRoute
   '/_app/mail/sent': typeof AppMailSentRoute
   '/_app/mail/snoozed': typeof AppMailSnoozedRoute
+  '/_app/settings/accounts': typeof AppSettingsAccountsRoute
   '/_app/settings/mail': typeof AppSettingsMailRoute
   '/_app/settings/preferences': typeof AppSettingsPreferencesRoute
   '/_app/settings/signatures': typeof AppSettingsSignaturesRoute
@@ -291,6 +300,7 @@ export interface FileRouteTypes {
     | '/mail/search'
     | '/mail/sent'
     | '/mail/snoozed'
+    | '/settings/accounts'
     | '/settings/mail'
     | '/settings/preferences'
     | '/settings/signatures'
@@ -319,6 +329,7 @@ export interface FileRouteTypes {
     | '/mail/search'
     | '/mail/sent'
     | '/mail/snoozed'
+    | '/settings/accounts'
     | '/settings/mail'
     | '/settings/preferences'
     | '/settings/signatures'
@@ -349,6 +360,7 @@ export interface FileRouteTypes {
     | '/_app/mail/search'
     | '/_app/mail/sent'
     | '/_app/mail/snoozed'
+    | '/_app/settings/accounts'
     | '/_app/settings/mail'
     | '/_app/settings/preferences'
     | '/_app/settings/signatures'
@@ -419,6 +431,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/contacts/'
       preLoaderRoute: typeof AppContactsIndexRouteImport
       parentRoute: typeof AppContactsRoute
+    }
+    '/_app/settings/accounts': {
+      id: '/_app/settings/accounts'
+      path: '/settings/accounts'
+      fullPath: '/settings/accounts'
+      preLoaderRoute: typeof AppSettingsAccountsRouteImport
+      parentRoute: typeof AppRoute
     }
     '/_app/settings/signatures': {
       id: '/_app/settings/signatures'
@@ -634,6 +653,7 @@ interface AppRouteChildren {
   AppMailRoute: typeof AppMailRouteWithChildren
   AppRulesRoute: typeof AppRulesRoute
   AppTemplatesRoute: typeof AppTemplatesRoute
+  AppSettingsAccountsRoute: typeof AppSettingsAccountsRoute
   AppSettingsMailRoute: typeof AppSettingsMailRoute
   AppSettingsPreferencesRoute: typeof AppSettingsPreferencesRoute
   AppSettingsSignaturesRoute: typeof AppSettingsSignaturesRoute
@@ -645,6 +665,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppMailRoute: AppMailRouteWithChildren,
   AppRulesRoute: AppRulesRoute,
   AppTemplatesRoute: AppTemplatesRoute,
+  AppSettingsAccountsRoute: AppSettingsAccountsRoute,
   AppSettingsMailRoute: AppSettingsMailRoute,
   AppSettingsPreferencesRoute: AppSettingsPreferencesRoute,
   AppSettingsSignaturesRoute: AppSettingsSignaturesRoute,

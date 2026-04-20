@@ -53,6 +53,15 @@ provider:
       - "https://www.googleapis.com/auth/gmail.send"
     watch_topic: "projects/psense-mail/topics/gmail-push"
 
+  pop3:
+    host: "localhost"
+    port: 1110
+    username: ""
+    password: ""
+    tls_mode: "none"
+    connect_timeout_seconds: 10
+    max_messages_per_poll: 50
+
 # ── File Storage ─────────────────────────────────────────────────────────────
 file_storage:
   backend: "nas"                          # "nas" | "s3" | "azure_blob" | "gcs"

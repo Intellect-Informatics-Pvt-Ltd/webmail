@@ -236,6 +236,9 @@ export function AppHeader() {
               <Link to="/settings/signatures">Signatures</Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
+              <Link to="/settings/accounts">Accounts & sync</Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
               <Link to="/rules">Rules</Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>

@@ -10,7 +10,7 @@ import logging
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from app.adapters.protocols import FileStorageAdapter, SearchAdapter, TransportAdapter
+from app.adapters.protocols import FileStorageAdapter, InboundAdapter, SearchAdapter, TransportAdapter
 
 if TYPE_CHECKING:
     from config.settings import Settings
@@ -101,3 +101,39 @@ class AdapterRegistry:
             from app.adapters.search.memory import MemorySearchAdapter
 
             return MemorySearchAdapter()
+
+    # ── Inbound ──────────────────────────────────────────────────────────
+
+    @cached_property
+    def inbound(self) -> InboundAdapter:
+        active = self._settings.provider.active
+        logger.info("Initialising inbound adapter: %s", active)
+
+        if active == "pop3":
+            from app.adapters.inbound.pop3 import POP3InboundAdapter
+            from app.adapters.inbound.seen_store import create_seen_store
+
+            cfg = self._settings.provider.pop3
+            if not cfg.username:
+                raise ValueError(
+                    "provider.pop3.username is required when provider.active is 'pop3'"
+                )
+            store = create_seen_store(self._settings.database.backend)
+            return POP3InboundAdapter(config=cfg, seen_store=store)
+        elif active == "mailpit":
+            from app.adapters.inbound.mailpit import MailPitInboundAdapter
+
+            return MailPitInboundAdapter(api_url=self._settings.provider.mailpit.api_url)
+        elif active == "gmail":
+            from app.adapters.inbound.gmail import GmailInboundAdapter
+
+            cfg = self._settings.provider.gmail
+            return GmailInboundAdapter(
+                credentials_file=cfg.credentials_file,
+                token_file=cfg.token_file,
+                watch_topic=cfg.watch_topic,
+            )
+        else:
+            from app.adapters.inbound.memory import MemoryInboundAdapter
+
+            return MemoryInboundAdapter()

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Module-level references — set during lifespan
 _registry: AdapterRegistry | None = None
 _settings: Settings | None = None
+_inbound_poller = None  # InboundPollerWorker | None — exposed for accounts router
 
 
 def get_registry() -> AdapterRegistry:
@@ -70,6 +71,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.workers.manager import WorkerManager
     worker_manager = WorkerManager(settings, _registry)
     worker_manager.start_all()
+
+    # Expose poller for accounts endpoint
+    global _inbound_poller
+    _inbound_poller = worker_manager.inbound_poller
 
     logger.info("PSense Mail API ready")
 
@@ -139,6 +144,7 @@ def create_app() -> FastAPI:
     from app.api.routers.saved_searches import router as saved_searches_router
     from app.api.routers.attachments import router as attachments_router
     from app.api.routers.sync import router as sync_router
+    from app.api.routers.accounts import router as accounts_router
 
     app.include_router(messages_router)
     app.include_router(threads_router)
@@ -153,6 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(saved_searches_router)
     app.include_router(attachments_router)
     app.include_router(sync_router)
+    app.include_router(accounts_router)
 
     return app
 

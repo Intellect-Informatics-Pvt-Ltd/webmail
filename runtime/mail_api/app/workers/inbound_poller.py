@@ -38,18 +38,36 @@ class InboundPollerWorker:
         self._task: asyncio.Task | None = None
         self.user_id = cache_user_id
 
+        # Status tracking for /accounts/pop3/status endpoint
+        self.last_poll_at: datetime | None = None
+        self.last_poll_status: str = "never"  # "ok" | "error" | "never"
+        self.last_error: str | None = None
+        self.messages_last_cycle: int = 0
+        self.is_polling: bool = False
+
+        # Immediate poll trigger
+        self._trigger_event: asyncio.Event | None = None
+
     def start(self) -> None:
         if self._running:
             return
         self._running = True
+        self._trigger_event = asyncio.Event()
         self._task = asyncio.create_task(self._poll_loop())
         logger.info("Inbound poller worker started (interval=%ds)", self.interval)
 
     def stop(self) -> None:
         self._running = False
+        if self._trigger_event:
+            self._trigger_event.set()  # Wake up sleeping loop
         if self._task:
             self._task.cancel()
         logger.info("Inbound poller worker stopped")
+
+    def trigger_immediate_poll(self) -> None:
+        """Wake the poller to perform an immediate out-of-cycle fetch."""
+        if self._trigger_event:
+            self._trigger_event.set()
 
     async def _poll_loop(self) -> None:
         from app.services.rules_facade import RulesFacade
@@ -57,6 +75,7 @@ class InboundPollerWorker:
         rules_facade = RulesFacade()
 
         while self._running:
+            self.is_polling = True
             try:
                 # Fetch new messages
                 messages = await self.adapter.fetch_new_messages(mailbox_id="default")
@@ -101,12 +120,30 @@ class InboundPollerWorker:
                     if processed_ids:
                         await self.adapter.acknowledge(processed_ids)
 
+                # Update status tracking
+                self.last_poll_at = datetime.now(timezone.utc)
+                self.last_poll_status = "ok"
+                self.last_error = None
+                self.messages_last_cycle = len(messages) if messages else 0
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Error in inbound poller loop: %s", e)
+                self.last_poll_at = datetime.now(timezone.utc)
+                self.last_poll_status = "error"
+                self.last_error = str(e)
+                self.messages_last_cycle = 0
+            finally:
+                self.is_polling = False
 
-            await asyncio.sleep(self.interval)
+            # Wait for interval or immediate trigger
+            if self._trigger_event:
+                self._trigger_event.clear()
+                try:
+                    await asyncio.wait_for(self._trigger_event.wait(), timeout=self.interval)
+                except asyncio.TimeoutError:
+                    pass  # Normal timeout — proceed to next poll
 
     async def _resolve_thread(self, inbound: InboundMessage, new_msg_id: str) -> str:
         """Determine the thread_id for an inbound message.

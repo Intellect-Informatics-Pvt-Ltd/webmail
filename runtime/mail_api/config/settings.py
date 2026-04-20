@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -71,10 +71,21 @@ class GmailConfig(BaseModel):
     watch_topic: str = ""
 
 
+class Pop3Config(BaseModel):
+    host: str = "localhost"
+    port: int = Field(default=1110, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    tls_mode: Literal["none", "ssl", "starttls"] = "none"
+    connect_timeout_seconds: int = Field(default=10, gt=0)
+    max_messages_per_poll: int = Field(default=50, ge=1, le=500)
+
+
 class ProviderConfig(BaseModel):
-    active: str = "memory"  # "mailpit" | "gmail" | "memory"
+    active: str = "memory"  # "mailpit" | "gmail" | "pop3" | "memory"
     mailpit: MailpitConfig = Field(default_factory=MailpitConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
+    pop3: Pop3Config = Field(default_factory=Pop3Config)
 
 
 class NASConfig(BaseModel):

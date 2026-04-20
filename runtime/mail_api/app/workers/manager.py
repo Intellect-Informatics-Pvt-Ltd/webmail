@@ -50,19 +50,15 @@ class WorkerManager:
         )
 
         # 4. Inbound poller (only for provider with polling support)
-        if settings.provider.active == "mailpit":
-            from app.adapters.inbound.mailpit import MailPitInboundAdapter
-
-            inbound_adapter = MailPitInboundAdapter(
-                api_url=settings.provider.mailpit.api_url
+        self.inbound_poller: InboundPollerWorker | None = None
+        if settings.provider.active in ("mailpit", "pop3"):
+            inbound_adapter = adapter_registry.inbound
+            self.inbound_poller = InboundPollerWorker(
+                adapter=inbound_adapter,
+                cache_user_id=settings.auth.dev_user_id,
+                poll_interval=settings.workers.sync_interval_seconds,
             )
-            self._workers.append(
-                InboundPollerWorker(
-                    adapter=inbound_adapter,
-                    cache_user_id=settings.auth.dev_user_id,
-                    poll_interval=settings.workers.sync_interval_seconds,
-                )
-            )
+            self._workers.append(self.inbound_poller)
 
     def start_all(self) -> None:
         """Start all workers."""

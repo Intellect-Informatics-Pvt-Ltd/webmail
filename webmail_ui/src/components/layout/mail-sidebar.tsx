@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import {
   Inbox,
@@ -20,6 +20,7 @@ import {
   Layers,
   HardDrive,
   MoreHorizontal,
+  Loader2,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import type { LucideProps } from "lucide-react";
@@ -377,6 +378,9 @@ export function MailSidebar() {
         </div>
       </ScrollArea>
 
+      {/* Sync status (POP3 only) */}
+      <SyncStatusRow />
+
       {/* Storage info */}
       <div className="border-t border-sidebar-border p-3 text-xs text-sidebar-foreground/70">
         <div className="mb-1 flex items-center gap-2">
@@ -389,5 +393,96 @@ export function MailSidebar() {
         </div>
       </div>
     </aside>
+  );
+}
+
+// ── Sync status row (shown when POP3 provider is active) ─────────────────────
+
+interface SyncStatus {
+  last_poll_at: string | null;
+  last_poll_status: string;
+  last_error: string | null;
+  messages_last_cycle: number;
+  is_polling: boolean;
+}
+
+function SyncStatusRow() {
+  const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [visible, setVisible] = useState(false);
+
+  const fetchStatus = useCallback(() => {
+    fetch("/api/v1/accounts/pop3/status")
+      .then((r) => {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then((data: SyncStatus | null) => {
+        if (data && data.last_poll_status !== "never") {
+          setStatus(data);
+          setVisible(true);
+        }
+      })
+      .catch(() => setVisible(false));
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 30000);
+    return () => clearInterval(interval);
+  }, [fetchStatus]);
+
+  if (!visible || !status) return null;
+
+  const handleRetry = () => {
+    fetch("/api/v1/accounts/pop3/sync", { method: "POST" }).catch(() => {});
+    setTimeout(fetchStatus, 2000);
+  };
+
+  const formatRelative = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return "just now";
+    if (min < 60) return `${min} min ago`;
+    const hrs = Math.floor(min / 60);
+    return hrs < 24 ? `${hrs}h ago` : `${Math.floor(hrs / 24)}d ago`;
+  };
+
+  if (status.is_polling) {
+    return (
+      <div className="border-t border-sidebar-border px-3 py-2 text-xs text-sidebar-foreground/70">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          <span>Syncing\u2026</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.last_poll_status === "error") {
+    return (
+      <div className="border-t border-sidebar-border px-3 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-destructive" />
+          <span className="text-destructive">Sync error</span>
+          <button
+            onClick={handleRetry}
+            className="ml-auto text-[10px] font-medium text-primary hover:underline"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-sidebar-border px-3 py-2 text-xs text-sidebar-foreground/70">
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 rounded-full bg-green-500" />
+        <span>
+          Synced \u00b7 {status.last_poll_at ? formatRelative(status.last_poll_at) : "never"}
+        </span>
+      </div>
+    </div>
   );
 }
