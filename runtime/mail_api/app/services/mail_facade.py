@@ -29,6 +29,7 @@ from app.domain.responses import (
     MessageDetail,
     MessageSummary,
     ThreadDetail,
+    ThreadSummary,
 )
 from app.services.op_log import append_op
 
@@ -167,6 +168,51 @@ class MailFacade:
             await doc.save()
 
         return _msg_to_detail(doc)
+
+    async def list_threads(
+        self, user_id: str, folder_id: str | None = None,
+        cursor: str | None = None, limit: int = 50,
+        tenant_id: str = "default",
+    ) -> CursorPage[ThreadSummary]:
+        """List threads with cursor-based pagination."""
+        filters: dict[str, Any] = {"user_id": user_id}
+        if folder_id:
+            filters["folder_id"] = folder_id
+
+        if cursor:
+            filters["last_message_at"] = {"$lt": datetime.fromisoformat(cursor)}
+
+        docs = await ThreadDoc.find(filters).sort(
+            [("last_message_at", -1)]
+        ).limit(limit + 1).to_list()
+
+        has_more = len(docs) > limit
+        if has_more:
+            docs = docs[:limit]
+
+        items: list[ThreadSummary] = []
+        for t in docs:
+            # Get last message for preview
+            last_msg = await MessageDoc.find_one(
+                MessageDoc.user_id == user_id, MessageDoc.thread_id == t.id,
+            )
+            items.append(ThreadSummary(
+                id=t.id, subject=t.subject, folder_id=t.folder_id,
+                participant_emails=t.participant_emails,
+                last_message_at=t.last_message_at,
+                unread_count=t.unread_count, total_count=t.total_count,
+                has_attachments=t.has_attachments, is_flagged=t.is_flagged,
+                preview=last_msg.preview if last_msg else "",
+                last_sender=last_msg.sender if last_msg else None,
+            ))
+
+        next_cursor = None
+        if has_more and docs:
+            last = docs[-1]
+            if last.last_message_at:
+                next_cursor = last.last_message_at.isoformat()
+
+        return CursorPage(items=items, next_cursor=next_cursor)
 
     async def get_thread(self, user_id: str, thread_id: str, tenant_id: str = "default") -> ThreadDetail:
         """Get thread with all its messages."""
@@ -323,50 +369,78 @@ class MailFacade:
     # ── Folders ──────────────────────────────────────────────────────────
 
     async def list_folders(self, user_id: str) -> list[FolderResponse]:
-        """List all folders with unread/total counts."""
+        """List all folders with unread/total counts via aggregation pipeline (N+1 fix)."""
         folders = await FolderDoc.find(FolderDoc.user_id == user_id).sort([("sort_order", 1)]).to_list()
+
+        # Single aggregation pipeline to get counts for all regular folders
+        pipeline = [
+            {"$match": {"user_id": user_id, "deleted_at": None}},
+            {"$group": {
+                "_id": {
+                    "folder_id": "$folder_id",
+                    "is_read": "$is_read",
+                    "is_flagged": "$is_flagged",
+                    "is_focused": "$is_focused",
+                },
+                "count": {"$sum": 1},
+            }},
+        ]
+        agg_results = await MessageDoc.aggregate(pipeline).to_list()
+
+        # Build lookup tables from aggregation results
+        folder_total: dict[str, int] = {}
+        folder_unread: dict[str, int] = {}
+        # Virtual folder accumulators
+        flagged_total = 0
+        flagged_unread = 0
+        focused_total = 0
+        focused_unread = 0
+        other_total = 0
+        other_unread = 0
+
+        for row in agg_results:
+            key = row["_id"]
+            fid = key["folder_id"]
+            is_read = key["is_read"]
+            is_flagged = key.get("is_flagged", False)
+            is_focused = key.get("is_focused", False)
+            cnt = row["count"]
+
+            folder_total[fid] = folder_total.get(fid, 0) + cnt
+            if not is_read:
+                folder_unread[fid] = folder_unread.get(fid, 0) + cnt
+
+            # Flagged virtual folder (exclude deleted)
+            if is_flagged and fid != "deleted":
+                flagged_total += cnt
+                if not is_read:
+                    flagged_unread += cnt
+
+            # Focused / Other virtual folders (inbox only)
+            if fid == "inbox":
+                if is_focused:
+                    focused_total += cnt
+                    if not is_read:
+                        focused_unread += cnt
+                else:
+                    other_total += cnt
+                    if not is_read:
+                        other_unread += cnt
 
         result: list[FolderResponse] = []
         for f in folders:
-            if f.system and f.kind in (FolderKind.FOCUSED, FolderKind.OTHER, FolderKind.FLAGGED):
-                # Virtual folders — compute counts differently
-                if f.kind == FolderKind.FLAGGED:
-                    total = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.is_flagged == True,  # noqa: E712
-                        MessageDoc.folder_id != "deleted",
-                    ).count()
-                    unread = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.is_flagged == True,  # noqa: E712
-                        MessageDoc.is_read == False, MessageDoc.folder_id != "deleted",  # noqa: E712
-                    ).count()
-                elif f.kind == FolderKind.FOCUSED:
-                    total = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.folder_id == "inbox",
-                        MessageDoc.is_focused == True,  # noqa: E712
-                    ).count()
-                    unread = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.folder_id == "inbox",
-                        MessageDoc.is_focused == True, MessageDoc.is_read == False,  # noqa: E712
-                    ).count()
-                else:  # OTHER
-                    total = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.folder_id == "inbox",
-                        MessageDoc.is_focused == False,  # noqa: E712
-                    ).count()
-                    unread = await MessageDoc.find(
-                        MessageDoc.user_id == user_id, MessageDoc.folder_id == "inbox",
-                        MessageDoc.is_focused == False, MessageDoc.is_read == False,  # noqa: E712
-                    ).count()
+            if f.system and f.kind == FolderKind.FLAGGED:
+                result.append(_folder_to_response(f, unread=flagged_unread, total=flagged_total))
+            elif f.system and f.kind == FolderKind.FOCUSED:
+                result.append(_folder_to_response(f, unread=focused_unread, total=focused_total))
+            elif f.system and f.kind == FolderKind.OTHER:
+                result.append(_folder_to_response(f, unread=other_unread, total=other_total))
             else:
-                total = await MessageDoc.find(
-                    MessageDoc.user_id == user_id, MessageDoc.folder_id == f.id,
-                ).count()
-                unread = await MessageDoc.find(
-                    MessageDoc.user_id == user_id, MessageDoc.folder_id == f.id,
-                    MessageDoc.is_read == False,  # noqa: E712
-                ).count()
-
-            result.append(_folder_to_response(f, unread=unread, total=total))
+                result.append(_folder_to_response(
+                    f,
+                    unread=folder_unread.get(f.id, 0),
+                    total=folder_total.get(f.id, 0),
+                ))
 
         return result
 

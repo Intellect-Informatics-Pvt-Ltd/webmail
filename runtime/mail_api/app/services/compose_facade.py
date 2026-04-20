@@ -48,15 +48,17 @@ class ComposeFacade:
         self._transport = transport
         self._default_from_address = default_from_address
 
-    async def list_drafts(self, user_id: str) -> list[DraftResponse]:
+    async def list_drafts(self, user_id: str, tenant_id: str = "default", account_id: str = "") -> list[DraftResponse]:
         """List all drafts for a user."""
         docs = await DraftDoc.find(DraftDoc.user_id == user_id).sort([("updated_at", -1)]).to_list()
         return [_draft_to_response(d) for d in docs]
 
-    async def create_draft(self, user_id: str, payload: DraftCreateRequest) -> DraftResponse:
+    async def create_draft(self, user_id: str, payload: DraftCreateRequest, tenant_id: str = "default", account_id: str = "") -> DraftResponse:
         """Create a new draft."""
         draft = DraftDoc(
             user_id=user_id,
+            tenant_id=tenant_id,
+            account_id=account_id or user_id,
             subject=payload.subject,
             body_html=payload.body_html,
             body_text=payload.body_text,
@@ -113,6 +115,7 @@ class ComposeFacade:
     async def send_draft(
         self, user_id: str, draft_id: str, request: SendDraftRequest,
         user_email: str | None = None, user_name: str | None = None,
+        tenant_id: str = "default", account_id: str = "",
     ) -> DeliveryReceipt:
         """Send a draft via the configured transport adapter."""
         # Idempotency check

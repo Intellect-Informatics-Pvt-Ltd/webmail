@@ -10,7 +10,7 @@ import logging
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from app.adapters.protocols import FileStorageAdapter, InboundAdapter, SearchAdapter, TransportAdapter
+from app.adapters.protocols import AVScannerAdapter, FileStorageAdapter, InboundAdapter, LLMAdapter, SearchAdapter, TransportAdapter
 
 if TYPE_CHECKING:
     from config.settings import Settings
@@ -133,7 +133,72 @@ class AdapterRegistry:
                 token_file=cfg.token_file,
                 watch_topic=cfg.watch_topic,
             )
+        elif active == "imap":
+            from app.adapters.inbound.imap import IMAPInboundAdapter
+
+            cfg = self._settings.provider.imap
+            return IMAPInboundAdapter(
+                host=cfg.host, port=cfg.port,
+                username=cfg.username, password=cfg.password,
+                tls_mode=cfg.tls_mode, mailbox=cfg.mailbox,
+                connect_timeout=cfg.connect_timeout_seconds,
+            )
+        elif active == "msgraph":
+            from app.adapters.inbound.msgraph import MicrosoftGraphInboundAdapter
+
+            cfg = self._settings.provider.msgraph
+            return MicrosoftGraphInboundAdapter(
+                tenant_id=cfg.tenant_id,
+                client_id=cfg.client_id,
+                client_secret=cfg.client_secret,
+                redirect_uri=cfg.redirect_uri,
+                scopes=cfg.scopes,
+            )
         else:
             from app.adapters.inbound.memory import MemoryInboundAdapter
 
             return MemoryInboundAdapter()
+
+    # ── AV Scanner ────────────────────────────────────────────────────────────
+
+    @cached_property
+    def av_scanner(self) -> AVScannerAdapter:
+        active = self._settings.provider.active
+        logger.info("Initialising AV scanner adapter")
+
+        # For now, use NoOp in dev / memory mode, ClamAV when configured
+        # Can be extended with a dedicated av.backend setting later
+        try:
+            from app.adapters.av.clamav import ClamAVScanner
+            return ClamAVScanner()
+        except Exception:
+            from app.adapters.av.noop import NoOpAVScanner
+            return NoOpAVScanner()
+
+    # ── LLM (AI Copilot) ────────────────────────────────────────────────
+
+    @cached_property
+    def llm(self) -> LLMAdapter:
+        backend = self._settings.copilot.llm_backend
+        logger.info("Initialising LLM adapter: %s", backend)
+
+        if backend == "openai":
+            from app.adapters.llm.openai_adapter import OpenAILLMAdapter
+            return OpenAILLMAdapter(
+                api_key=self._settings.copilot.openai_api_key,
+                model=self._settings.copilot.openai_model,
+                base_url=self._settings.copilot.openai_base_url or None,
+            )
+        elif backend == "ollama":
+            from app.adapters.llm.openai_adapter import OpenAILLMAdapter
+            # Ollama exposes an OpenAI-compatible API at /v1
+            base = self._settings.copilot.ollama_base_url.rstrip("/")
+            return OpenAILLMAdapter(
+                api_key="ollama",  # Ollama doesn't require a real key
+                model=self._settings.copilot.ollama_model,
+                base_url=f"{base}/v1",
+            )
+        else:
+            from app.adapters.llm.noop import NoOpLLMAdapter
+            return NoOpLLMAdapter()
+

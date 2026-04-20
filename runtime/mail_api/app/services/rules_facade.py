@@ -22,9 +22,10 @@ class RulesFacade:
     async def list_rules(self, user_id: str) -> list[RuleDoc]:
         return await RuleDoc.find(RuleDoc.user_id == user_id).sort([("created_at", -1)]).to_list()
 
-    async def create_rule(self, user_id: str, payload: RuleCreateRequest) -> RuleDoc:
+    async def create_rule(self, user_id: str, payload: RuleCreateRequest, tenant_id: str = "default", account_id: str = "") -> RuleDoc:
         rule = RuleDoc(
-            user_id=user_id, name=payload.name, enabled=payload.enabled,
+            user_id=user_id, tenant_id=tenant_id, account_id=account_id or user_id,
+            name=payload.name, enabled=payload.enabled,
             conditions=payload.conditions, actions=payload.actions,
         )
         await rule.insert()

@@ -84,6 +84,18 @@ class InboundPollerWorker:
 
                     processed_ids = []
                     for inbound in messages:
+                        # Dedup: check Message-ID header
+                        raw_msg_id = inbound.raw_headers.get("Message-ID", "").strip().strip("<>")
+                        if raw_msg_id:
+                            existing = await MessageDoc.find_one(
+                                MessageDoc.user_id == self.user_id,
+                                MessageDoc.message_id_header == raw_msg_id,
+                            )
+                            if existing:
+                                logger.debug("Skipping duplicate message (Message-ID: %s)", raw_msg_id)
+                                processed_ids.append(inbound.provider_message_id)
+                                continue
+
                         msg_id = str(ULID())
 
                         # Resolve thread membership
@@ -94,6 +106,9 @@ class InboundPollerWorker:
                             user_id=self.user_id,
                             thread_id=thread_id,
                             folder_id="inbox",
+                            message_id_header=raw_msg_id or None,
+                            in_reply_to_header=inbound.raw_headers.get("In-Reply-To", "").strip().strip("<>") or None,
+                            references_headers=self._parse_references(inbound.raw_headers.get("References", "")),
                             subject=inbound.subject,
                             preview=inbound.body_text[:200] if inbound.body_text else "",
                             body_html=inbound.body_html,
@@ -103,8 +118,6 @@ class InboundPollerWorker:
                             cc=inbound.cc,
                             received_at=inbound.received_at or datetime.now(timezone.utc),
                             is_read=False,
-                            mail_in_reply_to=inbound.raw_headers.get("In-Reply-To"),
-                            mail_references=self._parse_references(inbound.raw_headers.get("References", "")),
                             attachments=[],
                         )
                         await doc.insert()
@@ -165,7 +178,7 @@ class InboundPollerWorker:
             clean_id = in_reply_to.strip("<>")
             existing = await MessageDoc.find_one(
                 MessageDoc.user_id == user_id,
-                {"adapter_meta.message_id_header": clean_id},
+                MessageDoc.message_id_header == clean_id,
             )
             if existing:
                 return existing.thread_id
@@ -175,7 +188,7 @@ class InboundPollerWorker:
         for ref in reversed(self._parse_references(references_raw)):
             existing = await MessageDoc.find_one(
                 MessageDoc.user_id == user_id,
-                {"adapter_meta.message_id_header": ref},
+                MessageDoc.message_id_header == ref,
             )
             if existing:
                 return existing.thread_id

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from app.domain.models import MailRecipient
@@ -130,6 +131,36 @@ class FileStorageAdapter(Protocol):
         ...
 
 
+# ── AV Scanner ──────────────────────────────────────────────────────────────
+
+
+class AVVerdict(str, Enum):
+    CLEAN = "clean"
+    INFECTED = "infected"
+    ERROR = "error"
+
+
+@dataclass
+class AVScanResult:
+    verdict: AVVerdict
+    threat_name: str | None = None
+    scanner_name: str = ""
+    scan_duration_ms: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class AVScannerAdapter(Protocol):
+    """Scan file content for malware / viruses."""
+
+    async def scan(self, content: bytes, filename: str) -> AVScanResult:
+        """Scan content. Returns verdict + optional threat name."""
+        ...
+
+    async def health_check(self) -> AdapterHealthStatus:
+        ...
+
+
 # ── Search ───────────────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -161,3 +192,19 @@ class SearchAdapter(Protocol):
 
     async def health_check(self) -> AdapterHealthStatus:
         ...
+
+
+# ── LLM (AI Copilot) ────────────────────────────────────────────────────────
+
+
+@runtime_checkable
+class LLMAdapter(Protocol):
+    """Protocol for Large Language Model adapters (AI copilot features)."""
+
+    async def complete(self, prompt: str, max_tokens: int = 512) -> str:
+        """Send a prompt and return the completion text."""
+        ...
+
+    async def health_check(self) -> AdapterHealthStatus:
+        ...
+

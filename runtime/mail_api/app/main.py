@@ -99,16 +99,41 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # ── Startup validation ────────────────────────────────────────────
+
+    # CORS: require explicit origins in production
+    if settings.auth.enabled and settings.app.cors_origins == ["http://localhost:3000", "http://localhost:5173"]:
+        raise ValueError("CORS_ORIGINS must be explicitly configured in production")
+
+    # Credential encryption: require key in production
+    if settings.auth.enabled and not settings.security.credential_encryption_key:
+        raise ValueError("CREDENTIAL_ENCRYPTION_KEY is required when auth is enabled")
+    elif not settings.auth.enabled and not settings.security.credential_encryption_key:
+        logger.warning("Credential encryption key not set — credentials stored unencrypted (dev mode)")
+
     # ── Middleware (order matters — outermost first) ──────────────────────
 
     # CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.app.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    if settings.app.cors_strict:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.app.cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Correlation-ID"],
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.app.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Rate limiter (before auth so it can use dev_user_id in dev mode)
+    from app.middleware.rate_limiter import RateLimiterMiddleware
+    app.add_middleware(RateLimiterMiddleware, settings=settings)
 
     # Error handler (catches domain exceptions from services)
     from app.middleware.error_handler import ErrorHandlerMiddleware
@@ -125,6 +150,11 @@ def create_app() -> FastAPI:
     # Authentication
     from app.middleware.auth import AuthMiddleware
     app.add_middleware(AuthMiddleware, settings=settings)
+
+    # OpenTelemetry (conditional — adds zero overhead when disabled)
+    if settings.observability.otel_enabled:
+        from app.middleware.otel import OpenTelemetryMiddleware
+        app.add_middleware(OpenTelemetryMiddleware, otel_endpoint=settings.observability.otel_endpoint)
 
     # ── Routers ──────────────────────────────────────────────────────────
 
@@ -145,6 +175,11 @@ def create_app() -> FastAPI:
     from app.api.routers.attachments import router as attachments_router
     from app.api.routers.sync import router as sync_router
     from app.api.routers.accounts import router as accounts_router
+    from app.api.routers.sse import router as sse_router
+    from app.api.routers.contacts import router as contacts_router
+    from app.api.routers.calendar import router as calendar_router
+    from app.api.routers.copilot import router as copilot_router
+    from app.api.routers.webhooks import router as webhooks_router
 
     app.include_router(messages_router)
     app.include_router(threads_router)
@@ -160,6 +195,11 @@ def create_app() -> FastAPI:
     app.include_router(attachments_router)
     app.include_router(sync_router)
     app.include_router(accounts_router)
+    app.include_router(sse_router)
+    app.include_router(contacts_router)
+    app.include_router(calendar_router)
+    app.include_router(copilot_router)
+    app.include_router(webhooks_router)
 
     return app
 

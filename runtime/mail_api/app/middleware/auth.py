@@ -8,14 +8,16 @@ Supports two modes controlled by `auth.enabled` in settings:
 
   - **Production mode** (auth.enabled = true):
     Validates Bearer JWT tokens against KeyCloak JWKS endpoint.
+    Caches JWKS keys with configurable TTL to avoid hammering KeyCloak.
     Extracts user_id, email, display_name, and roles from claims.
     Returns 401 on missing/invalid/expired tokens.
 """
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -36,6 +38,54 @@ class AuthenticatedUser:
     roles: list[str] = field(default_factory=list)
 
 
+# ── JWKS Cache ────────────────────────────────────────────────────────────
+
+
+class JWKSCache:
+    """In-process singleton JWKS cache with configurable TTL.
+
+    Caches the JWKS key set fetched from the KeyCloak JWKS endpoint.
+    Uses stale-if-error fallback: serves expired cache on fetch failure.
+    """
+
+    def __init__(self, ttl_seconds: int = 300):
+        self._ttl = ttl_seconds
+        self._cache: dict[str, Any] | None = None
+        self._fetched_at: float = 0.0
+
+    @property
+    def is_fresh(self) -> bool:
+        return self._cache is not None and (time.monotonic() - self._fetched_at) < self._ttl
+
+    @property
+    def has_stale(self) -> bool:
+        return self._cache is not None
+
+    async def get_jwks(self, jwks_uri: str) -> dict[str, Any]:
+        """Get JWKS keys, fetching from URI if cache is expired."""
+        if self.is_fresh:
+            return self._cache  # type: ignore[return-value]
+
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(jwks_uri)
+                resp.raise_for_status()
+                self._cache = resp.json()
+                self._fetched_at = time.monotonic()
+                return self._cache  # type: ignore[return-value]
+        except Exception as exc:
+            if self.has_stale:
+                logger.warning("JWKS fetch failed, using stale cache: %s", exc)
+                return self._cache  # type: ignore[return-value]
+            raise  # No cache at all — caller will handle
+
+
+# Module-level JWKS cache singleton
+_jwks_cache: JWKSCache | None = None
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication middleware with dev bypass."""
 
@@ -48,6 +98,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self._auth_enabled = settings.auth.enabled
 
         if self._auth_enabled:
+            global _jwks_cache
+            _jwks_cache = JWKSCache(ttl_seconds=settings.auth.jwks_cache_ttl_seconds)
             logger.info("Auth middleware: KeyCloak JWT validation ENABLED (issuer=%s)", settings.auth.issuer)
         else:
             logger.info(
@@ -86,6 +138,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user = user
             return await call_next(request)
         except Exception as e:
+            if "JWKS" in str(e) or "fetch" in str(e).lower():
+                logger.error("JWKS unavailable: %s", e)
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Authentication service unavailable", "code": "AUTH_UNAVAILABLE"},
+                )
             logger.warning("JWT validation failed: %s", e)
             return JSONResponse(
                 status_code=401,
@@ -93,21 +151,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
     async def _validate_token(self, token: str) -> AuthenticatedUser:
-        """Validate JWT against KeyCloak JWKS.
-
-        Uses python-jose for JWT decode + JWKS key fetch via httpx.
-        """
+        """Validate JWT against KeyCloak JWKS with caching."""
         from jose import jwt as jose_jwt
 
-        # In a real implementation, we'd cache the JWKS keys
-        # and validate audience, issuer, and expiry.
-        # For now, decode and extract claims.
-        import httpx
+        global _jwks_cache
+        if _jwks_cache is None:
+            raise RuntimeError("JWKS cache not initialized")
 
-        async with httpx.AsyncClient() as client:
-            jwks_resp = await client.get(self._settings.auth.jwks_uri)
-            jwks_resp.raise_for_status()
-            jwks = jwks_resp.json()
+        jwks = await _jwks_cache.get_jwks(self._settings.auth.jwks_uri)
 
         payload = jose_jwt.decode(
             token,

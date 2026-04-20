@@ -10,8 +10,8 @@ class TemplatesFacade:
     async def list_templates(self, user_id: str) -> list[TemplateDoc]:
         return await TemplateDoc.find(TemplateDoc.user_id == user_id).sort([("created_at", -1)]).to_list()
 
-    async def create_template(self, user_id: str, payload: TemplateCreateRequest) -> TemplateDoc:
-        tpl = TemplateDoc(user_id=user_id, name=payload.name, subject=payload.subject, body_html=payload.body_html)
+    async def create_template(self, user_id: str, payload: TemplateCreateRequest, tenant_id: str = "default", account_id: str = "") -> TemplateDoc:
+        tpl = TemplateDoc(user_id=user_id, tenant_id=tenant_id, account_id=account_id or user_id, name=payload.name, subject=payload.subject, body_html=payload.body_html)
         await tpl.insert()
         return tpl
 

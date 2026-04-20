@@ -39,6 +39,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { MailMessage } from "@/types/mail";
 import { toast } from "sonner";
+import { SanitizedHtmlFrame } from "@/components/mail/sanitized-html-frame";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -380,9 +381,10 @@ function ThreadMessage({
 
       {open && (
         <div className="border-t border-border px-4 py-3">
-          <div
-            className="prose prose-sm max-w-none text-sm leading-relaxed text-foreground/90 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground"
-            dangerouslySetInnerHTML={{ __html: msg.bodyHtml }}
+          <SanitizedHtmlFrame
+            bodyHtml={msg.bodyHtml}
+            bodyText={undefined}
+            className="prose prose-sm max-w-none text-sm leading-relaxed text-foreground/90"
           />
 
           {msg.attachments && msg.attachments.length > 0 && (

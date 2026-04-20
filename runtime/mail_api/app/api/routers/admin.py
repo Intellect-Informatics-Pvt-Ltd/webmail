@@ -19,10 +19,25 @@ router = APIRouter(prefix="/api/v1", tags=["admin"])
 
 @router.get("/health", response_model=HealthReport)
 async def health_check() -> HealthReport:
-    """System health check — no auth required."""
+    """System health check — no auth required. Includes DB, adapters, workers."""
     from app.main import _registry
 
     adapter_health: list[AdapterHealth] = []
+
+    # Check database connectivity
+    try:
+        from app.domain.models import TenantDoc
+        import time as _time
+        t0 = _time.monotonic()
+        await TenantDoc.find_one()
+        db_latency = (_time.monotonic() - t0) * 1000
+        adapter_health.append(AdapterHealth(
+            name="database", status="ok", latency_ms=db_latency,
+        ))
+    except Exception as e:
+        adapter_health.append(AdapterHealth(
+            name="database", status="down", details={"error": str(e)},
+        ))
 
     # Check each adapter
     if _registry:
@@ -91,3 +106,72 @@ async def diagnostics(
         "folder_count": folder_count,
         "thread_count": thread_count,
     }
+
+
+@router.get("/admin/gdpr/export")
+async def gdpr_export(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """GDPR data export — returns all user data as structured JSON."""
+    from app.services.gdpr_service import GDPRExportService
+    service = GDPRExportService()
+    return await service.export_user_data(user.user_id)
+
+
+@router.delete("/admin/gdpr/erase")
+async def gdpr_erase(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """GDPR right to erasure — permanently delete all user data."""
+    from app.services.gdpr_service import GDPRExportService
+    service = GDPRExportService()
+    counts = await service.delete_user_data(user.user_id)
+    return {"status": "erased", "deleted_counts": counts}
+
+
+@router.get("/admin/dlq")
+async def list_dead_letters(
+    queue: str | None = None,
+    limit: int = 50,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """List dead-letter queue entries."""
+    from app.domain.models import DeadLetterDoc
+    filters: dict[str, Any] = {"resolved_at": None}
+    if queue:
+        filters["queue"] = queue
+    docs = await DeadLetterDoc.find(filters).sort(
+        [("created_at", -1)]
+    ).limit(limit).to_list()
+    return {"items": [d.model_dump(mode="json") for d in docs]}
+
+
+@router.post("/admin/dlq/{entry_id}/retry")
+async def retry_dead_letter(
+    entry_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Retry a dead-letter queue entry."""
+    from app.domain.models import DeadLetterDoc
+    doc = await DeadLetterDoc.find_one(DeadLetterDoc.id == entry_id)
+    if not doc:
+        return {"error": "Not found"}
+    doc.retry_count += 1
+    doc.last_attempt_at = datetime.now(timezone.utc)
+    await doc.save()
+    return {"status": "retry_queued", "retry_count": doc.retry_count}
+
+
+@router.post("/admin/dlq/{entry_id}/resolve")
+async def resolve_dead_letter(
+    entry_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark a dead-letter entry as resolved."""
+    from app.domain.models import DeadLetterDoc
+    doc = await DeadLetterDoc.find_one(DeadLetterDoc.id == entry_id)
+    if not doc:
+        return {"error": "Not found"}
+    doc.resolved_at = datetime.now(timezone.utc)
+    await doc.save()
+    return {"status": "resolved"}

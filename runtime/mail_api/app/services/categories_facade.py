@@ -7,11 +7,11 @@ from app.domain.requests import CategoryCreateRequest, CategoryUpdateRequest
 
 
 class CategoriesFacade:
-    async def list_categories(self, user_id: str) -> list[CategoryDoc]:
+    async def list_categories(self, user_id: str, tenant_id: str = "default") -> list[CategoryDoc]:
         return await CategoryDoc.find(CategoryDoc.user_id == user_id).to_list()
 
-    async def create_category(self, user_id: str, payload: CategoryCreateRequest) -> CategoryDoc:
-        cat = CategoryDoc(user_id=user_id, name=payload.name, color=payload.color)
+    async def create_category(self, user_id: str, payload: CategoryCreateRequest, tenant_id: str = "default", account_id: str = "") -> CategoryDoc:
+        cat = CategoryDoc(user_id=user_id, tenant_id=tenant_id, account_id=account_id or user_id, name=payload.name, color=payload.color)
         await cat.insert()
         return cat
 

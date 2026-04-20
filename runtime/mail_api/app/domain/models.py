@@ -25,12 +25,14 @@ monotonic `seq`. The delta sync endpoint streams it to clients for offline sync.
 """
 from __future__ import annotations
 
+import json
+import logging
 import time
 from datetime import datetime
 from typing import Any
 
-from beanie import Document, Indexed
-from pydantic import BaseModel, Field
+from beanie import Document, Indexed, before_event, Replace, Insert
+from pydantic import BaseModel, Field, field_validator
 from ulid import ULID
 
 from app.domain.enums import (
@@ -61,6 +63,19 @@ def _new_id() -> str:
 
 def _now() -> datetime:
     return datetime.utcnow()
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _get_fernet():
+    """Lazy-load Fernet cipher from settings."""
+    from config.settings import get_settings
+    key = get_settings().security.credential_encryption_key
+    if not key:
+        return None
+    from cryptography.fernet import Fernet
+    return Fernet(key.encode() if isinstance(key, str) else key)
 
 
 # ── Embedded sub-documents ───────────────────────────────────────────────────
@@ -177,12 +192,33 @@ class AccountDoc(Document):
     display_name: str = ""
     provider: ProviderKind = ProviderKind.MEMORY
     provider_meta: dict[str, Any] = Field(default_factory=dict)
+    provider_meta_enc: str | None = None  # Fernet-encrypted provider_meta
     is_primary: bool = True
     sync_cursor: str | None = None  # provider delta cursor
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     version: int = 1
     deleted_at: datetime | None = None
+
+    @before_event(Insert, Replace)
+    def encrypt_provider_meta(self) -> None:
+        """Encrypt provider_meta before persistence using Fernet."""
+        fernet = _get_fernet()
+        if fernet and self.provider_meta:
+            plaintext = json.dumps(self.provider_meta).encode()
+            self.provider_meta_enc = fernet.encrypt(plaintext).decode()
+            self.provider_meta = {}  # Clear plaintext for storage
+
+    def decrypt_provider_meta(self) -> None:
+        """Decrypt provider_meta_enc back to provider_meta dict."""
+        if self.provider_meta_enc:
+            fernet = _get_fernet()
+            if fernet:
+                try:
+                    plaintext = fernet.decrypt(self.provider_meta_enc.encode())
+                    self.provider_meta = json.loads(plaintext)
+                except Exception:
+                    _logger.warning("Failed to decrypt provider_meta for account %s", self.id)
 
     class Settings:
         name = "accounts"
@@ -309,6 +345,8 @@ class MessageDoc(Document):
             [("user_id", 1), ("categories", 1)],
             [("tenant_id", 1), ("account_id", 1), ("folder_id", 1), ("received_at", -1)],
             [("tenant_id", 1), ("account_id", 1), ("updated_at", -1)],
+            # Sparse unique index on RFC 2822 Message-ID for dedup
+            [("message_id_header", 1)],
         ]
 
 
@@ -600,6 +638,138 @@ class FeatureFlagDoc(Document):
         name = "feature_flags"
 
 
+class SequenceDoc(Document):
+    """Atomic counter for monotonic op-log sequencing.
+
+    One document per (tenant_id, account_id) pair. The seq field is
+    incremented atomically via findAndModify ($inc) on every op-log append.
+    """
+    id: str = Field(alias="_id")  # type: ignore[assignment]  # "{tenant_id}:{account_id}"
+    seq: int = 0
+
+    class Settings:
+        name = "sequences"
+
+
+class DeadLetterDoc(Document):
+    """Dead-letter queue entry for failed async jobs."""
+    id: str = Field(default_factory=_new_id, alias="_id")  # type: ignore[assignment]
+    tenant_id: str = "default"
+    account_id: str = ""
+    queue: str = ""  # e.g., "inbound_poll", "send_retry", "av_scan"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: datetime = Field(default_factory=_now)
+    last_attempt_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+    class Settings:
+        name = "dead_letters"
+        indexes = [
+            [("tenant_id", 1), ("queue", 1), ("created_at", -1)],
+            "resolved_at",
+        ]
+
+
+class ContactDoc(Document):
+    """Contact entry for the address book."""
+    id: str = Field(default_factory=_new_id, alias="_id")  # type: ignore[assignment]
+    tenant_id: str = "default"
+    account_id: str = ""
+    user_id: str
+    email: str
+    display_name: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    company: str = ""
+    job_title: str = ""
+    phone: str = ""
+    avatar_url: str | None = None
+    notes: str = ""
+    groups: list[str] = Field(default_factory=list)
+    is_favorite: bool = False
+    last_contacted_at: datetime | None = None
+    version: int = 1
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+    deleted_at: datetime | None = None
+
+    class Settings:
+        name = "contacts"
+        indexes = [
+            [("user_id", 1), ("email", 1)],
+            [("tenant_id", 1), ("account_id", 1)],
+            [("user_id", 1), ("display_name", 1)],
+        ]
+
+
+class CalendarEventDoc(Document):
+    """Calendar event."""
+    id: str = Field(default_factory=_new_id, alias="_id")  # type: ignore[assignment]
+    tenant_id: str = "default"
+    account_id: str = ""
+    user_id: str
+    title: str
+    description: str = ""
+    location: str = ""
+    start_time: datetime
+    end_time: datetime
+    all_day: bool = False
+    recurrence_rule: str | None = None  # RFC 5545 RRULE
+    attendees: list[MailRecipient] = Field(default_factory=list)
+    organizer: MailRecipient | None = None
+    calendar_id: str = "default"
+    color: str | None = None
+    reminder_minutes: int | None = None
+    ical_uid: str | None = None  # iCalendar UID for dedup
+    version: int = 1
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+    deleted_at: datetime | None = None
+
+    class Settings:
+        name = "calendar_events"
+        indexes = [
+            [("user_id", 1), ("start_time", 1)],
+            [("tenant_id", 1), ("account_id", 1), ("start_time", 1)],
+            "ical_uid",
+        ]
+
+
+class MigrationDoc(Document):
+    """Schema migration record — tracks applied migrations."""
+    id: str = Field(alias="_id")  # type: ignore[assignment]  # migration name
+    applied_at: datetime = Field(default_factory=_now)
+    duration_ms: float = 0.0
+    description: str = ""
+    rollback_possible: bool = False
+
+    class Settings:
+        name = "migrations"
+
+
+class WebhookSubscriptionDoc(Document):
+    """Webhook subscription for event notifications."""
+    id: str = Field(default_factory=_new_id, alias="_id")  # type: ignore[assignment]
+    tenant_id: str = "default"
+    url: str
+    events: list[str] = Field(default_factory=list)  # e.g., ["message.received", "message.sent"]
+    secret: str = ""  # HMAC-SHA256 secret
+    active: bool = True
+    failure_count: int = 0
+    last_delivered_at: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+    class Settings:
+        name = "webhook_subscriptions"
+        indexes = [
+            [("tenant_id", 1), ("active", 1)],
+        ]
+
+
 # ── Convenience: all Beanie document models for init_beanie() ────────────────
 
 ALL_DOCUMENTS = [
@@ -620,10 +790,17 @@ ALL_DOCUMENTS = [
     PreferencesDoc,
     SavedSearchDoc,
     FavoritesDoc,
+    # Contacts & Calendar
+    ContactDoc,
+    CalendarEventDoc,
     # Infrastructure
     DeliveryLogDoc,
     IdempotencyRecord,
     OpLogEntry,
     AuditLogDoc,
     FeatureFlagDoc,
+    SequenceDoc,
+    DeadLetterDoc,
+    MigrationDoc,
+    WebhookSubscriptionDoc,
 ]

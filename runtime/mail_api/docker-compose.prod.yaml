@@ -30,3 +30,14 @@ services:
 
       # ── MongoDB (override if different from base) ──
       PSENSE_MAIL__DATABASE__MONGO__URI: "${MONGO_URI:-mongodb://localhost:27017}"
+
+      # ── CORS ──
+      PSENSE_MAIL__APP__CORS_ORIGINS: "${CORS_ORIGINS:?Set CORS_ORIGINS}"
+      PSENSE_MAIL__APP__CORS_STRICT: "true"
+
+      # ── Auth ──
+      PSENSE_MAIL__AUTH__ENABLED: "true"
+
+      # ── Security ──
+      PSENSE_MAIL__SECURITY__CREDENTIAL_ENCRYPTION_KEY: "${CREDENTIAL_ENCRYPTION_KEY:?Set CREDENTIAL_ENCRYPTION_KEY}"
+

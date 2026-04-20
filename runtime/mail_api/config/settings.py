@@ -24,7 +24,8 @@ class AppConfig(BaseModel):
     name: str = "PSense Mail API"
     version: str = "0.1.0"
     debug: bool = False
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"])
+    cors_strict: bool = False
 
 
 class AuthConfig(BaseModel):
@@ -32,6 +33,7 @@ class AuthConfig(BaseModel):
     issuer: str = ""
     audience: str = ""
     jwks_uri: str = ""
+    jwks_cache_ttl_seconds: int = 300
     dev_user_id: str = "dev-user-001"
     dev_user_email: str = "avery@psense.ai"
     dev_user_name: str = "Avery Chen"
@@ -81,11 +83,41 @@ class Pop3Config(BaseModel):
     max_messages_per_poll: int = Field(default=50, ge=1, le=500)
 
 
+class ImapConfig(BaseModel):
+    host: str = "localhost"
+    port: int = Field(default=993, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    tls_mode: Literal["none", "ssl", "starttls"] = "ssl"
+    mailbox: str = "INBOX"
+    connect_timeout_seconds: int = Field(default=10, gt=0)
+
+
+class MicrosoftGraphConfig(BaseModel):
+    tenant_id: str = ""  # Azure AD tenant
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str = ""
+    scopes: list[str] = Field(default_factory=lambda: ["Mail.ReadWrite", "Mail.Send"])
+
+
+class SmtpConfig(BaseModel):
+    host: str = "localhost"
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    tls_mode: Literal["none", "ssl", "starttls"] = "starttls"
+    from_address: str = "noreply@psense.local"
+
+
 class ProviderConfig(BaseModel):
-    active: str = "memory"  # "mailpit" | "gmail" | "pop3" | "memory"
+    active: str = "memory"  # "mailpit" | "gmail" | "pop3" | "imap" | "msgraph" | "memory"
     mailpit: MailpitConfig = Field(default_factory=MailpitConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
     pop3: Pop3Config = Field(default_factory=Pop3Config)
+    imap: ImapConfig = Field(default_factory=ImapConfig)
+    msgraph: MicrosoftGraphConfig = Field(default_factory=MicrosoftGraphConfig)
+    smtp: SmtpConfig = Field(default_factory=SmtpConfig)
 
 
 class NASConfig(BaseModel):
@@ -124,6 +156,30 @@ class SearchConfig(BaseModel):
     backend: str = "mongo"  # "mongo" | "memory"
 
 
+class RateLimitConfig(BaseModel):
+    requests_per_minute: int = 300
+    search_requests_per_minute: int = 30
+    backend: Literal["memory", "redis"] = "memory"
+
+
+class SecurityConfig(BaseModel):
+    credential_encryption_key: str | None = None  # 32-byte URL-safe base64 Fernet key
+
+
+class ObservabilityConfig(BaseModel):
+    otel_enabled: bool = False
+    otel_endpoint: str = "http://localhost:4317"
+
+
+class CopilotConfig(BaseModel):
+    llm_backend: Literal["openai", "ollama", "noop"] = "noop"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = ""  # Custom base URL for OpenAI-compatible APIs (e.g. Azure OpenAI)
+    ollama_base_url: str = "http://localhost:11434"  # Ollama / local LLM server URL
+    ollama_model: str = "qwen2.5:7b"  # Default Ollama model (Qwen, Llama, Mistral, etc.)
+
+
 class WorkersConfig(BaseModel):
     enabled: bool = True
     snooze_check_interval_seconds: int = 60
@@ -131,6 +187,8 @@ class WorkersConfig(BaseModel):
     sync_interval_seconds: int = 300
     scheduler_interval_seconds: int = 30
     retry_backoff_base_seconds: int = 60
+    av_retry_interval_seconds: int = 300
+    preview_poll_interval_seconds: int = 30
 
 
 class LoggingConfig(BaseModel):
@@ -200,6 +258,10 @@ class Settings(BaseSettings):
     search: SearchConfig = Field(default_factory=SearchConfig)
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    copilot: CopilotConfig = Field(default_factory=CopilotConfig)
 
     @classmethod
     def load(cls) -> "Settings":

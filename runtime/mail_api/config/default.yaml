@@ -104,3 +104,17 @@ logging:
   level: "INFO"
   format: "json"
   correlation_header: "X-Correlation-ID"
+
+# ── AI Copilot ──────────────────────────────────────────────────────────────
+copilot:
+  llm_backend: "noop"                     # "openai" | "ollama" | "noop"
+  openai_api_key: ""
+  openai_model: "gpt-4o-mini"
+  openai_base_url: ""                     # Custom base URL for Azure OpenAI / other providers
+  ollama_base_url: "http://localhost:11434"  # Ollama / local LLM server
+  ollama_model: "qwen2.5:7b"              # Any Ollama-hosted model (qwen2.5, llama3, mistral, etc.)
+
+# ── Observability ────────────────────────────────────────────────────────────
+observability:
+  otel_enabled: false
+  otel_endpoint: "http://localhost:4317"

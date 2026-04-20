@@ -72,6 +72,21 @@ class MessageDetail(MessageSummary):
     version: int = 1
 
 
+class ThreadSummary(BaseModel):
+    """Lightweight thread for list views (messages omitted)."""
+    id: str
+    subject: str
+    folder_id: str
+    participant_emails: list[str] = Field(default_factory=list)
+    last_message_at: datetime | None = None
+    unread_count: int = 0
+    total_count: int = 0
+    has_attachments: bool = False
+    is_flagged: bool = False
+    preview: str = ""
+    last_sender: MailRecipient | None = None
+
+
 class ThreadDetail(BaseModel):
     """Thread with its messages."""
     id: str

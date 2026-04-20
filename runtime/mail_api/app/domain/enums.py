@@ -142,11 +142,14 @@ class ProviderKind(str, Enum):
     MAILPIT = "mailpit"
     GMAIL = "gmail"
     MICROSOFT_GRAPH = "microsoft_graph"
+    POP3 = "pop3"
+    IMAP = "imap"
 
 
 class AvState(str, Enum):
     """Antivirus scan state for attachments."""
     UNKNOWN = "unknown"
+    PENDING = "pending"
     CLEAN = "clean"
     INFECTED = "infected"
     SKIPPED = "skipped"
@@ -155,5 +158,7 @@ class AvState(str, Enum):
 class PreviewState(str, Enum):
     """Attachment preview generation state."""
     NONE = "none"
+    PENDING = "pending"
+    PROCESSING = "processing"
     READY = "ready"
     FAILED = "failed"

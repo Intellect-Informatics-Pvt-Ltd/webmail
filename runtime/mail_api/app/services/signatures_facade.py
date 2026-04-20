@@ -10,8 +10,8 @@ class SignaturesFacade:
     async def list_signatures(self, user_id: str) -> list[SignatureDoc]:
         return await SignatureDoc.find(SignatureDoc.user_id == user_id).sort([("created_at", -1)]).to_list()
 
-    async def create_signature(self, user_id: str, payload: SignatureCreateRequest) -> SignatureDoc:
-        sig = SignatureDoc(user_id=user_id, name=payload.name, body_html=payload.body_html, is_default=payload.is_default)
+    async def create_signature(self, user_id: str, payload: SignatureCreateRequest, tenant_id: str = "default", account_id: str = "") -> SignatureDoc:
+        sig = SignatureDoc(user_id=user_id, tenant_id=tenant_id, account_id=account_id or user_id, name=payload.name, body_html=payload.body_html, is_default=payload.is_default)
         if payload.is_default:
             await self._clear_defaults(user_id)
         await sig.insert()
