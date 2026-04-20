@@ -1,58 +1,24 @@
+# ── PSense Mail — Base services ──────────────────────────────────────────
+#
+# Usage:
+#   Dev:   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+#   Prod:  docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up
+#
+# MongoDB is deployed separately — configure via MONGO__URI env var.
+#
 services:
-  mongodb:
-    image: mongo:7
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodata:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  mailpit:
-    image: axllent/mailpit:latest
-    ports:
-      - "1025:1025"      # SMTP
-      - "8025:8025"      # Web UI + REST API
-      - "1110:1110"      # POP3
-    environment:
-      MP_POP3_AUTH: "mailuser:mailpass"
-      # ── SMTP relay (uncomment & fill to deliver mail to real recipients) ──
-      # MP_SMTP_RELAY_HOST: "smtp.gmail.com"
-      # MP_SMTP_RELAY_PORT: "587"
-      # MP_SMTP_RELAY_STARTTLS: "true"
-      # MP_SMTP_RELAY_AUTH: "login"
-      # MP_SMTP_RELAY_USERNAME: "your-gmail@gmail.com"
-      # MP_SMTP_RELAY_PASSWORD: "your-app-password"
-      # MP_SMTP_RELAY_ALL: "true"
-
   api:
     build: .
     ports:
       - "8000:8000"
     environment:
       PSENSE_MAIL__DATABASE__BACKEND: "mongo"
-      PSENSE_MAIL__DATABASE__MONGO__URI: "mongodb://mongodb:27017"
+      PSENSE_MAIL__DATABASE__MONGO__URI: "mongodb://localhost:27017"
       PSENSE_MAIL__DATABASE__MONGO__DB_NAME: "psense_mail"
-      PSENSE_MAIL__PROVIDER__ACTIVE: "mailpit"
-      PSENSE_MAIL__PROVIDER__MAILPIT__SMTP_HOST: "mailpit"
-      PSENSE_MAIL__PROVIDER__MAILPIT__API_URL: "http://mailpit:8025"
-      PSENSE_MAIL__PROVIDER__POP3__HOST: "mailpit"
-      PSENSE_MAIL__PROVIDER__POP3__PORT: "1110"
-      PSENSE_MAIL__PROVIDER__POP3__USERNAME: "mailuser"
-      PSENSE_MAIL__PROVIDER__POP3__PASSWORD: "mailpass"
       PSENSE_MAIL__FILE_STORAGE__BACKEND: "nas"
       PSENSE_MAIL__FILE_STORAGE__NAS__BASE_PATH: "/data/attachments"
     volumes:
       - attachments:/data/attachments
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      mailpit:
-        condition: service_started
 
 volumes:
-  mongodata:
   attachments:

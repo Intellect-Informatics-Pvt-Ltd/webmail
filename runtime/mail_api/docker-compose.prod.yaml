@@ -1,0 +1,32 @@
+# ── PSense Mail — Production overlay ─────────────────────────────────────
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+#
+# No Mailpit — uses a real SMTP provider for outbound mail and POP3
+# for inbound.  Fill in the values below or pass them via .env / secrets.
+# MongoDB is deployed separately.
+#
+services:
+  api:
+    environment:
+      # ── Provider selection ──
+      PSENSE_MAIL__PROVIDER__ACTIVE: "pop3"
+
+      # ── Outbound SMTP (for sending mail) ──
+      PSENSE_MAIL__PROVIDER__SMTP__HOST: "${SMTP_HOST:?Set SMTP_HOST}"
+      PSENSE_MAIL__PROVIDER__SMTP__PORT: "${SMTP_PORT:-587}"
+      PSENSE_MAIL__PROVIDER__SMTP__USERNAME: "${SMTP_USERNAME:?Set SMTP_USERNAME}"
+      PSENSE_MAIL__PROVIDER__SMTP__PASSWORD: "${SMTP_PASSWORD:?Set SMTP_PASSWORD}"
+      PSENSE_MAIL__PROVIDER__SMTP__TLS_MODE: "${SMTP_TLS_MODE:-starttls}"
+      PSENSE_MAIL__PROVIDER__SMTP__FROM_ADDRESS: "${SMTP_FROM_ADDRESS:?Set SMTP_FROM_ADDRESS}"
+
+      # ── Inbound POP3 (for receiving mail) ──
+      PSENSE_MAIL__PROVIDER__POP3__HOST: "${POP3_HOST:?Set POP3_HOST}"
+      PSENSE_MAIL__PROVIDER__POP3__PORT: "${POP3_PORT:-995}"
+      PSENSE_MAIL__PROVIDER__POP3__USERNAME: "${POP3_USERNAME:?Set POP3_USERNAME}"
+      PSENSE_MAIL__PROVIDER__POP3__PASSWORD: "${POP3_PASSWORD:?Set POP3_PASSWORD}"
+      PSENSE_MAIL__PROVIDER__POP3__TLS_MODE: "${POP3_TLS_MODE:-ssl}"
+
+      # ── MongoDB (override if different from base) ──
+      PSENSE_MAIL__DATABASE__MONGO__URI: "${MONGO_URI:-mongodb://localhost:27017}"
